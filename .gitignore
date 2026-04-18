@@ -1,0 +1,14 @@
+node_modules/
+frontend/dist/
+backend/dist/
+output/
+tmp/
+data/*.json
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+*.log
+*.tmp
+*.cache
+.DS_Store
+Thumbs.db
