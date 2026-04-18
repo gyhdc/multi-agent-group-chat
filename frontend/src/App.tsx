@@ -8,6 +8,7 @@ import {
   getResearchDirectionDescription,
   getResearchDirectionLabel,
   getRoleTemplateName,
+  isBuiltInResearchDirection,
   PROVIDER_TYPE_ORDER,
   RESEARCH_DIRECTION_ORDER,
 } from "./catalog";
@@ -22,6 +23,7 @@ import {
   ProviderConfig,
   ProviderPreset,
   ProviderType,
+  ResearchDirectionPreset,
   RoleTemplateKey,
   UiLocale,
 } from "./types";
@@ -66,9 +68,90 @@ function truncateText(content: string, maxLength = 120): string {
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getPrecision(step?: number): number {
+  if (!step || Number.isInteger(step)) {
+    return 0;
+  }
+  const fraction = step.toString().split(".")[1] ?? "";
+  return fraction.length;
+}
+
+function formatNumberDraft(value: number, step?: number): string {
+  const precision = getPrecision(step);
+  return precision > 0 ? value.toFixed(precision).replace(/0+$/, "").replace(/\.$/, "") : String(Math.round(value));
+}
+
+function sanitizeFileName(input: string): string {
+  return input.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").slice(0, 80);
+}
+
+function downloadTextFile(fileName: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function NumericInput(props: {
+  value: number;
+  onCommit: (value: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  testId?: string;
+}) {
+  const { value, onCommit, min, max, step, testId } = props;
+  const [draft, setDraft] = useState(() => formatNumberDraft(value, step));
+
+  useEffect(() => {
+    setDraft(formatNumberDraft(value, step));
+  }, [value, step]);
+
+  function commit(nextDraft: string): void {
+    const parsed = Number(nextDraft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(formatNumberDraft(value, step));
+      return;
+    }
+
+    const clamped = clampNumber(parsed, min, max);
+    onCommit(clamped);
+    setDraft(formatNumberDraft(clamped, step));
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={step && step < 1 ? "decimal" : "numeric"}
+      data-testid={testId}
+      value={draft}
+      onChange={(event) => {
+        const nextValue = event.target.value.trim();
+        if (nextValue === "" || /^\d*([.]\d*)?$/.test(nextValue)) {
+          setDraft(nextValue);
+        }
+      }}
+      onBlur={() => commit(draft)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 function App() {
   const [rooms, setRooms] = useState<DiscussionRoom[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
+  const [customResearchDirections, setCustomResearchDirections] = useState<ResearchDirectionPreset[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [draftRoom, setDraftRoom] = useState<DiscussionRoom | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
@@ -90,6 +173,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [busyLabel, setBusyLabel] = useState("");
   const [error, setError] = useState("");
+  const [selectedCustomResearchDirectionId, setSelectedCustomResearchDirectionId] = useState<string | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
   const autoRunBusyRef = useRef(false);
   const chatStreamRef = useRef<HTMLDivElement | null>(null);
@@ -108,6 +192,29 @@ function App() {
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) ?? null,
     [presets, selectedPresetId],
+  );
+
+  const builtInResearchDirections = useMemo(
+    () =>
+      RESEARCH_DIRECTION_ORDER.map((direction) => ({
+        id: direction,
+        label: getResearchDirectionLabel(direction, locale),
+        description: getResearchDirectionDescription(direction, locale),
+        builtIn: true,
+        createdAt: "",
+        updatedAt: "",
+      })),
+    [locale],
+  );
+
+  const allResearchDirections = useMemo(
+    () => [...builtInResearchDirections, ...customResearchDirections],
+    [builtInResearchDirections, customResearchDirections],
+  );
+
+  const selectedCustomResearchDirection = useMemo(
+    () => customResearchDirections.find((direction) => direction.id === selectedCustomResearchDirectionId) ?? null,
+    [customResearchDirections, selectedCustomResearchDirectionId],
   );
 
   const participantCount = useMemo(
@@ -147,6 +254,18 @@ function App() {
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
 
+  function getDirectionLabelForRoom(room: DiscussionRoom): string {
+    return isBuiltInResearchDirection(room.researchDirectionKey)
+      ? getResearchDirectionLabel(room.researchDirectionKey, locale)
+      : room.researchDirectionLabel || room.researchDirectionKey;
+  }
+
+  function getDirectionDescriptionForRoom(room: DiscussionRoom): string {
+    return isBuiltInResearchDirection(room.researchDirectionKey)
+      ? getResearchDirectionDescription(room.researchDirectionKey, locale)
+      : room.researchDirectionDescription;
+  }
+
   useEffect(() => {
     void loadAll();
   }, []);
@@ -178,6 +297,12 @@ function App() {
       setSelectedPresetId(presets[0].id);
     }
   }, [presets, selectedPresetId]);
+
+  useEffect(() => {
+    if (!selectedCustomResearchDirectionId && customResearchDirections.length > 0) {
+      setSelectedCustomResearchDirectionId(customResearchDirections[0].id);
+    }
+  }, [customResearchDirections, selectedCustomResearchDirectionId]);
 
   useEffect(() => {
     if (!selectedRoom) {
@@ -218,6 +343,19 @@ function App() {
   }, [draftRoom, pendingReplyToMessageId]);
 
   useEffect(() => {
+    if (!draftRoom) {
+      return;
+    }
+    if (isBuiltInResearchDirection(draftRoom.researchDirectionKey)) {
+      return;
+    }
+    if (customResearchDirections.some((direction) => direction.id === draftRoom.researchDirectionKey)) {
+      return;
+    }
+    applyResearchDirectionSelection("general");
+  }, [draftRoom, customResearchDirections, locale]);
+
+  useEffect(() => {
     if (!chatStreamRef.current) {
       return;
     }
@@ -237,9 +375,14 @@ function App() {
     setError("");
 
     try {
-      const [nextRooms, nextPresets] = await Promise.all([api.listRooms(), api.listProviderPresets()]);
+      const [nextRooms, nextPresets, nextDirections] = await Promise.all([
+        api.listRooms(),
+        api.listProviderPresets(),
+        api.listResearchDirections(),
+      ]);
       setRooms(nextRooms);
       setPresets(nextPresets);
+      setCustomResearchDirections(nextDirections);
 
       if (nextRooms.length === 0) {
         setSelectedRoomId(null);
@@ -289,6 +432,31 @@ function App() {
       return exists ? current.map((item) => (item.id === preset.id ? preset : item)) : [...current, preset];
     });
     setSelectedPresetId(preset.id);
+  }
+
+  function syncResearchDirection(direction: ResearchDirectionPreset): void {
+    setCustomResearchDirections((current) => {
+      const exists = current.some((item) => item.id === direction.id);
+      return exists ? current.map((item) => (item.id === direction.id ? direction : item)) : [...current, direction];
+    });
+    setSelectedCustomResearchDirectionId(direction.id);
+  }
+
+  function applyResearchDirectionSelection(directionId: string): void {
+    const builtIn = isBuiltInResearchDirection(directionId);
+    updateRoomField("researchDirectionKey", directionId);
+    updateRoomField(
+      "researchDirectionLabel",
+      builtIn
+        ? getResearchDirectionLabel(directionId, locale)
+        : customResearchDirections.find((direction) => direction.id === directionId)?.label ?? directionId,
+    );
+    updateRoomField(
+      "researchDirectionDescription",
+      builtIn
+        ? getResearchDirectionDescription(directionId, locale)
+        : customResearchDirections.find((direction) => direction.id === directionId)?.description ?? "",
+    );
   }
 
   async function runTask(label: string, task: () => Promise<void>): Promise<void> {
@@ -675,6 +843,134 @@ function App() {
     });
   }
 
+  async function handleCreateCustomResearchDirection(): Promise<void> {
+    const defaultLabel = locale === "zh-CN" ? "自定义研究方向" : "Custom Research Direction";
+    const label = window.prompt(t(UI_COPY.customDirectionNamePrompt), defaultLabel);
+    if (!label?.trim()) {
+      return;
+    }
+    const description = window.prompt(t(UI_COPY.customDirectionDescriptionPrompt), "") ?? "";
+
+    await runTask(t(UI_COPY.addCustomDirection), async () => {
+      const saved = await api.createResearchDirection({
+        label: label.trim(),
+        description: description.trim(),
+      });
+      syncResearchDirection(saved);
+      updateRoomField("researchDirectionKey", saved.id);
+      updateRoomField("researchDirectionLabel", saved.label);
+      updateRoomField("researchDirectionDescription", saved.description);
+    });
+  }
+
+  async function handleSaveCustomResearchDirection(): Promise<void> {
+    if (!selectedCustomResearchDirection) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.saveCustomDirection), async () => {
+      const saved = await api.updateResearchDirection(selectedCustomResearchDirection.id, selectedCustomResearchDirection);
+      syncResearchDirection(saved);
+      if (draftRoom?.researchDirectionKey === saved.id) {
+        updateRoomField("researchDirectionLabel", saved.label);
+        updateRoomField("researchDirectionDescription", saved.description);
+      }
+    });
+  }
+
+  async function handleDeleteCustomResearchDirection(): Promise<void> {
+    if (!selectedCustomResearchDirection) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        formatTemplate(locale, t(UI_COPY.deleteCustomDirectionConfirm), { name: selectedCustomResearchDirection.label }),
+      )
+    ) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.deleteCustomDirection), async () => {
+      await api.deleteResearchDirection(selectedCustomResearchDirection.id);
+      const nextDirections = customResearchDirections.filter((direction) => direction.id !== selectedCustomResearchDirection.id);
+      setCustomResearchDirections(nextDirections);
+      setSelectedCustomResearchDirectionId(nextDirections[0]?.id ?? null);
+      if (draftRoom?.researchDirectionKey === selectedCustomResearchDirection.id) {
+        applyResearchDirectionSelection("general");
+      }
+    });
+  }
+
+  function buildRoomNoteContent(format: "md" | "txt", finalOnly = false): string {
+    if (!draftRoom) {
+      return "";
+    }
+
+    const finalBlock = finalInsight
+      ? `${format === "md" ? "##" : "Final Conclusion"} ${format === "md" ? "Final Conclusion" : ""}\n${finalInsight.content}\n`
+      : "";
+    const checkpoints = checkpointInsights
+      .slice()
+      .reverse()
+      .map((insight, index) =>
+        format === "md"
+          ? `## Checkpoint ${index + 1}\n${insight.content}\n`
+          : `Checkpoint ${index + 1}\n${insight.content}\n`,
+      )
+      .join("\n");
+
+    if (finalOnly) {
+      return format === "md"
+        ? `# ${draftRoom.title}\n\n## Topic\n${draftRoom.topic}\n\n${finalBlock}`.trim()
+        : `${draftRoom.title}\n\nTopic\n${draftRoom.topic}\n\n${finalInsight?.content ?? ""}`.trim();
+    }
+
+    return format === "md"
+      ? [
+          `# ${draftRoom.title}`,
+          "",
+          "## Topic",
+          draftRoom.topic,
+          "",
+          "## Objective",
+          draftRoom.objective,
+          "",
+          finalBlock.trim(),
+          checkpoints.trim(),
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : [
+          draftRoom.title,
+          "",
+          "Topic",
+          draftRoom.topic,
+          "",
+          "Objective",
+          draftRoom.objective,
+          "",
+          finalInsight ? `Final Conclusion\n${finalInsight.content}` : "",
+          checkpoints.trim(),
+        ]
+          .filter(Boolean)
+          .join("\n");
+  }
+
+  function handleDownloadNotes(format: "md" | "txt", finalOnly = false): void {
+    if (!draftRoom) {
+      return;
+    }
+    const content = buildRoomNoteContent(format, finalOnly);
+    if (!content.trim()) {
+      return;
+    }
+    const stem = sanitizeFileName(draftRoom.title || "discussion-notes");
+    const suffix = finalOnly ? "final" : "notes";
+    const fileName = `${stem}-${suffix}.${format}`;
+    downloadTextFile(fileName, content, format === "md" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8");
+  }
+
   function renderProviderFields(
     provider: ProviderConfig,
     onChange: (nextProvider: ProviderConfig) => void,
@@ -730,23 +1026,22 @@ function App() {
             </label>
             <label>
               {t(UI_COPY.temperatureLabel)}
-              <input
-                type="number"
+              <NumericInput
+                value={provider.temperature}
                 min={0}
                 max={2}
                 step={0.1}
-                value={provider.temperature}
-                onChange={(event) => onChange({ ...provider, temperature: Number(event.target.value) })}
+                onCommit={(value) => onChange({ ...provider, temperature: value })}
               />
             </label>
             <label>
               {t(UI_COPY.maxTokensLabel)}
-              <input
-                type="number"
+              <NumericInput
+                value={provider.maxTokens}
                 min={32}
                 max={4000}
-                value={provider.maxTokens}
-                onChange={(event) => onChange({ ...provider, maxTokens: Number(event.target.value) })}
+                step={1}
+                onCommit={(value) => onChange({ ...provider, maxTokens: Math.round(value) })}
               />
             </label>
           </>
@@ -780,12 +1075,12 @@ function App() {
             </label>
             <label>
               {t(UI_COPY.timeoutLabel)}
-              <input
-                type="number"
-                min={10000}
-                step={1000}
+              <NumericInput
                 value={provider.timeoutMs}
-                onChange={(event) => onChange({ ...provider, timeoutMs: Number(event.target.value) })}
+                min={10000}
+                max={600000}
+                step={1000}
+                onCommit={(value) => onChange({ ...provider, timeoutMs: Math.round(value) })}
               />
             </label>
             <label>
@@ -952,7 +1247,7 @@ function App() {
                       {getStatusLabel(locale, room.state.status)}
                     </span>
                   </div>
-                  <p className="room-meta">{getResearchDirectionLabel(room.researchDirectionKey, locale)}</p>
+                  <p className="room-meta">{getDirectionLabelForRoom(room)}</p>
                   <p className="room-meta clamp-2">{room.topic}</p>
                 </>
               )}
@@ -1004,8 +1299,10 @@ function App() {
           </article>
           <article className="objective-card">
             <span className="strip-label">{t(UI_COPY.roomSectionDirection)}</span>
-            <p>{getResearchDirectionLabel(draftRoom.researchDirectionKey, locale)}</p>
-            <p className="helper-text">{getResearchDirectionDescription(draftRoom.researchDirectionKey, locale)}</p>
+            <p>{getDirectionLabelForRoom(draftRoom)}</p>
+            <p className="helper-text">
+              {getDirectionDescriptionForRoom(draftRoom)}
+            </p>
           </article>
           <article className="objective-card">
             <span className="strip-label">{t(UI_COPY.roomSectionLanguage)}</span>
@@ -1083,6 +1380,30 @@ function App() {
                   </button>
                 </div>
               </div>
+
+              {finalInsight ? (
+                <section className="summary-spotlight" data-testid="summary-spotlight">
+                  <div className="summary-spotlight-header">
+                    <div>
+                      <p className="eyebrow">{t(UI_COPY.summarySpotlightEyebrow)}</p>
+                      <h4>{t(UI_COPY.summarySpotlightTitle)}</h4>
+                      <p className="helper-text">{t(UI_COPY.summarySpotlightHint)}</p>
+                    </div>
+                    <div className="inline-actions">
+                      <button className="ghost-button" onClick={() => handleDownloadNotes("md", true)}>
+                        {t(UI_COPY.downloadFinalMd)}
+                      </button>
+                      <button className="ghost-button" onClick={() => handleDownloadNotes("txt", true)}>
+                        {t(UI_COPY.downloadFinalTxt)}
+                      </button>
+                      <button className="primary-button" onClick={() => handleDownloadNotes("md", false)}>
+                        {t(UI_COPY.downloadNotesMd)}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="summary-spotlight-body">{finalInsight.content}</div>
+                </section>
+              ) : null}
 
               {busyLabel ? <div className="busy-chip">{busyLabel}</div> : null}
               {autoRunning ? <div className="busy-chip auto-play-chip">{t(UI_COPY.autoPlayRunning)}</div> : null}
@@ -1286,30 +1607,23 @@ function App() {
                 </label>
                 <label>
                   {t(UI_COPY.maxRoundsLabel)}
-                  <input
-                    type="number"
+                  <NumericInput
+                    value={draftRoom.maxRounds}
                     min={1}
                     max={12}
-                    value={draftRoom.maxRounds}
-                    onChange={(event) => updateRoomField("maxRounds", Number(event.target.value))}
+                    step={1}
+                    onCommit={(value) => updateRoomField("maxRounds", Math.round(value))}
                   />
                 </label>
                 <label>
                   {t(UI_COPY.autoRunDelayLabel)}
-                  <input
-                    type="number"
+                  <NumericInput
+                    value={draftRoom.autoRunDelaySeconds}
                     min={0.2}
                     max={30}
                     step={0.1}
-                    data-testid="auto-run-delay-input"
-                    value={draftRoom.autoRunDelaySeconds}
-                    onChange={(event) => {
-                      const nextValue = Number(event.target.value);
-                      updateRoomField(
-                        "autoRunDelaySeconds",
-                        Number.isFinite(nextValue) ? Math.max(0.2, Math.min(30, nextValue)) : 2,
-                      );
-                    }}
+                    testId="auto-run-delay-input"
+                    onCommit={(value) => updateRoomField("autoRunDelaySeconds", value)}
                   />
                 </label>
                 <label className="full-span">
@@ -1342,13 +1656,11 @@ function App() {
                   {t(UI_COPY.researchDirectionLabel)}
                   <select
                     value={draftRoom.researchDirectionKey}
-                    onChange={(event) =>
-                      updateRoomField("researchDirectionKey", event.target.value as DiscussionRoom["researchDirectionKey"])
-                    }
+                    onChange={(event) => applyResearchDirectionSelection(event.target.value)}
                   >
-                    {RESEARCH_DIRECTION_ORDER.map((direction) => (
-                      <option key={direction} value={direction}>
-                        {getResearchDirectionLabel(direction, locale)}
+                    {allResearchDirections.map((direction) => (
+                      <option key={direction.id} value={direction.id}>
+                        {direction.label}
                       </option>
                     ))}
                   </select>
@@ -1362,6 +1674,78 @@ function App() {
                     onChange={(event) => updateRoomField("researchDirectionNote", event.target.value)}
                   />
                 </label>
+                <div className="full-span custom-direction-panel">
+                  <div className="panel-header tight">
+                    <div>
+                      <h4>{t(UI_COPY.customDirectionLibraryTitle)}</h4>
+                      <p className="muted">{t(UI_COPY.customDirectionLibraryHint)}</p>
+                    </div>
+                    <button className="ghost-button" onClick={() => void handleCreateCustomResearchDirection()}>
+                      {t(UI_COPY.addCustomDirection)}
+                    </button>
+                  </div>
+
+                  {customResearchDirections.length > 0 ? (
+                    <div className="entity-list compact-entity-list">
+                      {customResearchDirections.map((direction) => (
+                        <button
+                          key={direction.id}
+                          className={`entity-chip ${direction.id === selectedCustomResearchDirectionId ? "selected" : ""}`}
+                          onClick={() => setSelectedCustomResearchDirectionId(direction.id)}
+                        >
+                          <span>{direction.label}</span>
+                          <small>{draftRoom.researchDirectionKey === direction.id ? t(UI_COPY.inUseLabel) : t(UI_COPY.customDirectionLabel)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted small-text">{t(UI_COPY.customDirectionEmpty)}</p>
+                  )}
+
+                  {selectedCustomResearchDirection ? (
+                    <div className="field-grid top-gap">
+                      <label>
+                        {t(UI_COPY.customDirectionNameLabel)}
+                        <input
+                          value={selectedCustomResearchDirection.label}
+                          onChange={(event) =>
+                            setCustomResearchDirections((current) =>
+                              current.map((direction) =>
+                                direction.id === selectedCustomResearchDirection.id
+                                  ? { ...direction, label: event.target.value }
+                                  : direction,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      <label className="full-span">
+                        {t(UI_COPY.customDirectionDescriptionLabel)}
+                        <textarea
+                          rows={3}
+                          value={selectedCustomResearchDirection.description}
+                          onChange={(event) =>
+                            setCustomResearchDirections((current) =>
+                              current.map((direction) =>
+                                direction.id === selectedCustomResearchDirection.id
+                                  ? { ...direction, description: event.target.value }
+                                  : direction,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      <div className="inline-actions full-span">
+                        <button className="ghost-button" onClick={() => void handleSaveCustomResearchDirection()}>
+                          {t(UI_COPY.saveCustomDirection)}
+                        </button>
+                        <button className="danger-button subtle" onClick={() => void handleDeleteCustomResearchDirection()}>
+                          {t(UI_COPY.deleteCustomDirection)}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
                 <label className="checkbox-line full-span">
                   <input
                     type="checkbox"

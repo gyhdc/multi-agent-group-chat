@@ -264,11 +264,15 @@ export function getRoleTemplateName(templateKey: RoleTemplateKey, locale: UiLoca
 }
 
 export function getResearchDirectionLabel(direction: ResearchDirectionKey, locale: UiLocale): string {
-  return RESEARCH_DIRECTION_DEFINITIONS[direction].label[locale];
+  return RESEARCH_DIRECTION_DEFINITIONS[direction as keyof typeof RESEARCH_DIRECTION_DEFINITIONS]?.label[locale] ?? direction;
 }
 
 export function getResearchDirectionDescription(direction: ResearchDirectionKey, locale: UiLocale): string {
-  return RESEARCH_DIRECTION_DEFINITIONS[direction].description[locale];
+  return RESEARCH_DIRECTION_DEFINITIONS[direction as keyof typeof RESEARCH_DIRECTION_DEFINITIONS]?.description[locale] ?? "";
+}
+
+export function isBuiltInResearchDirection(direction: ResearchDirectionKey): boolean {
+  return Object.prototype.hasOwnProperty.call(RESEARCH_DIRECTION_DEFINITIONS, direction);
 }
 
 export function createRoleFromTemplate(options: {
@@ -316,6 +320,8 @@ export function createLocalizedRoomSeed(locale: UiLocale, mockPresetId?: string 
         : "Drive short, high-signal, professionally adversarial discussion around one topic, while the recorder extracts key disagreements, decisive evidence, and a final judgment.",
     discussionLanguage: "zh-CN" satisfies DiscussionLanguage,
     researchDirectionKey: "general" satisfies ResearchDirectionKey,
+    researchDirectionLabel: RESEARCH_DIRECTION_DEFINITIONS.general.label[locale],
+    researchDirectionDescription: RESEARCH_DIRECTION_DEFINITIONS.general.description[locale],
     researchDirectionNote: "",
     autoRunDelaySeconds: 2,
     roles: [

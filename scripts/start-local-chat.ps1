@@ -6,6 +6,7 @@ param(
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $runtimeDir = Join-Path $root "tmp"
 $runtimeFile = Join-Path $runtimeDir "runtime.json"
+$logDir = Join-Path $runtimeDir "logs"
 $backendScript = Join-Path $PSScriptRoot "dev-backend.ps1"
 $frontendScript = Join-Path $PSScriptRoot "dev-frontend.ps1"
 
@@ -52,21 +53,27 @@ function Wait-TcpPort {
 
 function Start-LocalProcess {
   param(
-    [string]$ScriptPath
+    [string]$ScriptPath,
+    [string]$Name
   )
 
   $windowStyle = if ($Background) { "Hidden" } else { "Normal" }
+  $stdoutLog = Join-Path $logDir "$Name.stdout.log"
+  $stderrLog = Join-Path $logDir "$Name.stderr.log"
 
   return Start-Process `
     -FilePath "powershell.exe" `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath) `
+    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $ScriptPath + '"')) `
     -WorkingDirectory $root `
     -WindowStyle $windowStyle `
+    -RedirectStandardOutput $stdoutLog `
+    -RedirectStandardError $stderrLog `
     -PassThru
 }
 
 Set-Location $root
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
 if ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -and (Test-TcpPort -HostName "127.0.0.1" -Port 5173)) {
   if (-not $Background) {
@@ -89,11 +96,11 @@ if (-not $SkipInstall -and -not (Test-Path (Join-Path $root "node_modules"))) {
   }
 }
 
-$backendProcess = Start-LocalProcess -ScriptPath $backendScript
-$frontendProcess = Start-LocalProcess -ScriptPath $frontendScript
+$backendProcess = Start-LocalProcess -ScriptPath $backendScript -Name "backend"
+$frontendProcess = Start-LocalProcess -ScriptPath $frontendScript -Name "frontend"
 
-$backendReady = Wait-TcpPort -HostName "127.0.0.1" -Port 3030 -TimeoutSeconds 60
-$frontendReady = Wait-TcpPort -HostName "127.0.0.1" -Port 5173 -TimeoutSeconds 60
+$backendReady = Wait-TcpPort -HostName "127.0.0.1" -Port 3030 -TimeoutSeconds 120
+$frontendReady = Wait-TcpPort -HostName "127.0.0.1" -Port 5173 -TimeoutSeconds 120
 
 if (-not ($backendReady -and $frontendReady)) {
   foreach ($processId in @($backendProcess.Id, $frontendProcess.Id)) {
@@ -103,7 +110,7 @@ if (-not ($backendReady -and $frontendReady)) {
     }
   }
 
-  throw "Startup timeout: frontend or backend did not become ready in time."
+  throw "Startup timeout: frontend or backend did not become ready in time. Check tmp\\logs\\backend.stderr.log and tmp\\logs\\frontend.stderr.log."
 }
 
 @{

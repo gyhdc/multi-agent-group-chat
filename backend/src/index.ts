@@ -3,17 +3,21 @@ import express from "express";
 import { createBlankRoom, normalizePreset, normalizeRole } from "./defaults";
 import { addUserMessage, runDiscussion, startDiscussion, stepDiscussion, stopDiscussion, toggleInsightSaved } from "./orchestrator";
 import {
+  deleteResearchDirection,
   deleteProviderPreset,
   deleteRoom,
   ensureStorage,
+  getResearchDirection,
   getProviderPreset,
   getRoom,
+  listResearchDirections,
   listProviderPresets,
+  saveResearchDirection,
   listRooms,
   saveProviderPreset,
   saveRoom,
 } from "./store";
-import { DiscussionRole, DiscussionRoom, ProviderPreset } from "./types";
+import { DiscussionRole, DiscussionRoom, ProviderPreset, ResearchDirectionPreset } from "./types";
 
 const app = express();
 const port = Number(process.env.PORT || 3030);
@@ -37,6 +41,8 @@ function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>):
     objective: incoming.objective?.trim() || existing.objective,
     discussionLanguage: incoming.discussionLanguage ?? existing.discussionLanguage,
     researchDirectionKey: incoming.researchDirectionKey ?? existing.researchDirectionKey,
+    researchDirectionLabel: incoming.researchDirectionLabel?.trim() || existing.researchDirectionLabel,
+    researchDirectionDescription: incoming.researchDirectionDescription?.trim() || existing.researchDirectionDescription,
     researchDirectionNote: incoming.researchDirectionNote?.trim() ?? existing.researchDirectionNote,
     autoRunDelaySeconds:
       typeof incoming.autoRunDelaySeconds === "number" && Number.isFinite(incoming.autoRunDelaySeconds)
@@ -203,6 +209,45 @@ app.post("/api/rooms/:roomId/messages", async (req, res) => {
 
 app.get("/api/provider-presets", async (_req, res) => {
   res.json(await listProviderPresets());
+});
+
+app.get("/api/research-directions", async (_req, res) => {
+  res.json(await listResearchDirections());
+});
+
+app.post("/api/research-directions", async (req, res) => {
+  const preset = {
+    ...(req.body as Partial<ResearchDirectionPreset>),
+    builtIn: false,
+  } as ResearchDirectionPreset;
+  const saved = await saveResearchDirection(preset);
+  res.status(201).json(saved);
+});
+
+app.put("/api/research-directions/:directionId", async (req, res) => {
+  const existing = await getResearchDirection(req.params.directionId);
+  if (!existing) {
+    res.status(404).json({ error: "Research direction not found." });
+    return;
+  }
+
+  const saved = await saveResearchDirection({
+    ...existing,
+    ...(req.body as Partial<ResearchDirectionPreset>),
+    id: existing.id,
+    builtIn: false,
+    createdAt: existing.createdAt,
+  });
+  res.json(saved);
+});
+
+app.delete("/api/research-directions/:directionId", async (req, res) => {
+  const removed = await deleteResearchDirection(req.params.directionId);
+  if (!removed) {
+    res.status(404).json({ error: "Research direction not found." });
+    return;
+  }
+  res.status(204).send();
 });
 
 app.post("/api/provider-presets", async (req, res) => {

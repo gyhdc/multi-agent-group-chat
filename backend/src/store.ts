@@ -9,12 +9,17 @@ import {
   normalizePreset,
   normalizeRole,
 } from "./defaults";
-import { ChatMessage, DiscussionRoom, DiscussionSummary, InsightEntry, ProviderPreset } from "./types";
+import { ChatMessage, DiscussionRoom, DiscussionSummary, InsightEntry, ProviderPreset, ResearchDirectionPreset } from "./types";
 
 const dataDir = path.resolve(__dirname, "../../data");
 const roomsFile = path.join(dataDir, "rooms.json");
 const presetsFile = path.join(dataDir, "provider-presets.json");
 const settingsFile = path.join(dataDir, "settings.json");
+
+interface AppSettings {
+  lastOpenedRoomId: string | null;
+  researchDirections: ResearchDirectionPreset[];
+}
 
 async function ensureFile(filePath: string, initialContent: string): Promise<void> {
   try {
@@ -52,6 +57,18 @@ function normalizeMessage(input: Partial<ChatMessage>, fallbackTurn: number): Ch
     round: typeof input.round === "number" && Number.isFinite(input.round) ? input.round : 0,
     turn: typeof input.turn === "number" && Number.isFinite(input.turn) ? input.turn : fallbackTurn,
     createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeResearchDirection(input: Partial<ResearchDirectionPreset>): ResearchDirectionPreset {
+  const now = new Date().toISOString();
+  return {
+    id: input.id ?? randomUUID(),
+    label: input.label?.trim() || "Custom Direction",
+    description: input.description?.trim() || "",
+    builtIn: false,
+    createdAt: input.createdAt ?? now,
+    updatedAt: now,
   };
 }
 
@@ -130,6 +147,8 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
     objective: input.objective?.trim() || base.objective,
     discussionLanguage: input.discussionLanguage ?? base.discussionLanguage,
     researchDirectionKey: input.researchDirectionKey ?? base.researchDirectionKey,
+    researchDirectionLabel: input.researchDirectionLabel?.trim() || base.researchDirectionLabel,
+    researchDirectionDescription: input.researchDirectionDescription?.trim() || base.researchDirectionDescription,
     researchDirectionNote: input.researchDirectionNote?.trim() ?? base.researchDirectionNote,
     autoRunDelaySeconds:
       typeof input.autoRunDelaySeconds === "number" && Number.isFinite(input.autoRunDelaySeconds)
@@ -162,11 +181,29 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
+async function readSettings(): Promise<AppSettings> {
+  const fallback: AppSettings = {
+    lastOpenedRoomId: null,
+    researchDirections: [],
+  };
+  const parsed = await readJsonFile<Partial<AppSettings>>(settingsFile, fallback);
+  return {
+    lastOpenedRoomId: typeof parsed.lastOpenedRoomId === "string" ? parsed.lastOpenedRoomId : null,
+    researchDirections: Array.isArray(parsed.researchDirections)
+      ? parsed.researchDirections.map((item) => normalizeResearchDirection(item))
+      : [],
+  };
+}
+
+async function writeSettings(settings: AppSettings): Promise<void> {
+  await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf-8");
+}
+
 export async function ensureStorage(): Promise<void> {
   await fs.mkdir(dataDir, { recursive: true });
   await ensureFile(roomsFile, "[]");
   await ensureFile(presetsFile, "[]");
-  await ensureFile(settingsFile, JSON.stringify({ lastOpenedRoomId: null }, null, 2));
+  await ensureFile(settingsFile, JSON.stringify({ lastOpenedRoomId: null, researchDirections: [] }, null, 2));
 
   const existingRooms = await listRooms();
   if (existingRooms.length === 0) {
@@ -266,5 +303,42 @@ export async function deleteProviderPreset(presetId: string): Promise<boolean> {
 
   const nextPresets = presets.filter((preset) => preset.id !== presetId);
   await writeProviderPresets(nextPresets);
+  return true;
+}
+
+export async function listResearchDirections(): Promise<ResearchDirectionPreset[]> {
+  const settings = await readSettings();
+  return settings.researchDirections;
+}
+
+export async function getResearchDirection(directionId: string): Promise<ResearchDirectionPreset | undefined> {
+  const directions = await listResearchDirections();
+  return directions.find((direction) => direction.id === directionId);
+}
+
+export async function saveResearchDirection(direction: ResearchDirectionPreset): Promise<ResearchDirectionPreset> {
+  const settings = await readSettings();
+  const normalized = normalizeResearchDirection(direction);
+  const index = settings.researchDirections.findIndex((item) => item.id === normalized.id);
+
+  if (index >= 0) {
+    settings.researchDirections[index] = normalized;
+  } else {
+    settings.researchDirections.push(normalized);
+  }
+
+  await writeSettings(settings);
+  return normalized;
+}
+
+export async function deleteResearchDirection(directionId: string): Promise<boolean> {
+  const settings = await readSettings();
+  const nextDirections = settings.researchDirections.filter((direction) => direction.id !== directionId);
+  if (nextDirections.length === settings.researchDirections.length) {
+    return false;
+  }
+
+  settings.researchDirections = nextDirections;
+  await writeSettings(settings);
   return true;
 }

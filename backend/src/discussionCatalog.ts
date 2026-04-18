@@ -1,5 +1,18 @@
 import { DiscussionRoleKind, ResearchDirectionKey, RoleTemplateKey } from "./types";
 
+export const BUILTIN_RESEARCH_DIRECTION_ORDER = [
+  "general",
+  "ai-ml",
+  "computer-vision",
+  "nlp-llm",
+  "robotics-systems",
+  "biomedical-health",
+  "civil-geotechnical",
+  "social-science-policy",
+] as const;
+
+type BuiltInResearchDirectionKey = (typeof BUILTIN_RESEARCH_DIRECTION_ORDER)[number];
+
 export interface ResearchProfile {
   key: ResearchDirectionKey;
   label: string;
@@ -28,7 +41,7 @@ export interface RoleTemplateProfile {
   nonNegotiable: string;
 }
 
-export const RESEARCH_PROFILES: Record<ResearchDirectionKey, ResearchProfile> = {
+export const RESEARCH_PROFILES: Record<BuiltInResearchDirectionKey, ResearchProfile> = {
   general: {
     key: "general",
     label: "General Research",
@@ -262,7 +275,7 @@ const roleTemplateAliases: Record<string, RoleTemplateKey> = {
 };
 
 export function getResearchProfile(key: ResearchDirectionKey): ResearchProfile {
-  return RESEARCH_PROFILES[key] ?? RESEARCH_PROFILES.general;
+  return RESEARCH_PROFILES[key as BuiltInResearchDirectionKey] ?? RESEARCH_PROFILES.general;
 }
 
 export function getRoleTemplateProfile(key: RoleTemplateKey | null): RoleTemplateProfile | null {

@@ -1,4 +1,4 @@
-import { DiscussionRoom, ProviderPreset } from "./types";
+import { DiscussionRoom, ProviderPreset, ResearchDirectionPreset } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -63,6 +63,21 @@ export const api = {
       body: JSON.stringify({ content, replyToMessageId: replyToMessageId ?? null }),
     }),
   listProviderPresets: () => request<ProviderPreset[]>("/api/provider-presets"),
+  listResearchDirections: () => request<ResearchDirectionPreset[]>("/api/research-directions"),
+  createResearchDirection: (direction: Partial<ResearchDirectionPreset>) =>
+    request<ResearchDirectionPreset>("/api/research-directions", {
+      method: "POST",
+      body: JSON.stringify(direction),
+    }),
+  updateResearchDirection: (directionId: string, direction: Partial<ResearchDirectionPreset>) =>
+    request<ResearchDirectionPreset>(`/api/research-directions/${directionId}`, {
+      method: "PUT",
+      body: JSON.stringify(direction),
+    }),
+  deleteResearchDirection: (directionId: string) =>
+    request<void>(`/api/research-directions/${directionId}`, {
+      method: "DELETE",
+    }),
   createProviderPreset: (preset: Partial<ProviderPreset>) =>
     request<ProviderPreset>("/api/provider-presets", {
       method: "POST",

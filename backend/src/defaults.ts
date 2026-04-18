@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { inferRoleTemplateKey } from "./discussionCatalog";
+import { getResearchProfile, inferRoleTemplateKey } from "./discussionCatalog";
 import {
   DiscussionRole,
   DiscussionRoleKind,
@@ -174,6 +174,7 @@ export const createSummary = (): DiscussionSummary => ({
 
 export const createBlankRoom = (): DiscussionRoom => {
   const now = nowIso();
+  const researchProfile = getResearchProfile(defaultResearchDirection);
   return {
     id: randomUUID(),
     title: "New Discussion Room",
@@ -181,6 +182,8 @@ export const createBlankRoom = (): DiscussionRoom => {
     objective: "Use focused, short group-chat turns to challenge, improve, and sharpen the decision until a recorder can produce a useful conclusion.",
     discussionLanguage: defaultDiscussionLanguage,
     researchDirectionKey: defaultResearchDirection,
+    researchDirectionLabel: researchProfile.label,
+    researchDirectionDescription: researchProfile.scholarFraming,
     researchDirectionNote: "",
     autoRunDelaySeconds: defaultAutoRunDelaySeconds,
     maxRounds: 4,
@@ -247,6 +250,8 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     "The reviewer should resist weak ideas. The advisor should not roleplay vaguely; they must concretely narrow the problem, improve the method, and earn conditional acceptance.";
   room.discussionLanguage = defaultDiscussionLanguage;
   room.researchDirectionKey = "ai-ml";
+  room.researchDirectionLabel = getResearchProfile("ai-ml").label;
+  room.researchDirectionDescription = getResearchProfile("ai-ml").scholarFraming;
   room.researchDirectionNote = "Assume the audience is a serious research group or paper-review setting.";
   room.autoRunDelaySeconds = defaultAutoRunDelaySeconds;
   room.roles = [

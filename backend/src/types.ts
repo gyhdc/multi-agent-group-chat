@@ -1,15 +1,7 @@
 export type ProviderType = "mock" | "openai-compatible" | "custom-http" | "codex-cli";
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type DiscussionLanguage = "zh-CN" | "en-US";
-export type ResearchDirectionKey =
-  | "general"
-  | "ai-ml"
-  | "computer-vision"
-  | "nlp-llm"
-  | "robotics-systems"
-  | "biomedical-health"
-  | "civil-geotechnical"
-  | "social-science-policy";
+export type ResearchDirectionKey = string;
 export type RoleTemplateKey =
   | "reviewer"
   | "advisor"
@@ -41,6 +33,15 @@ export interface ProviderPreset {
   description: string;
   builtIn: boolean;
   provider: ProviderConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchDirectionPreset {
+  id: string;
+  label: string;
+  description: string;
+  builtIn: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +112,8 @@ export interface DiscussionRoom {
   objective: string;
   discussionLanguage: DiscussionLanguage;
   researchDirectionKey: ResearchDirectionKey;
+  researchDirectionLabel: string;
+  researchDirectionDescription: string;
   researchDirectionNote: string;
   autoRunDelaySeconds: number;
   maxRounds: number;

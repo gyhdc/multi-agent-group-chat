@@ -100,9 +100,11 @@ function pickFallbackReply(room: DiscussionRoom): ParticipantReply {
 
 function formatResearchContext(room: DiscussionRoom): string {
   const profile = getResearchProfile(room.researchDirectionKey);
+  const directionLabel = room.researchDirectionLabel.trim() || profile.label;
+  const directionDescription = room.researchDirectionDescription.trim() || profile.scholarFraming;
   const lines = [
-    `Research direction: ${profile.label}`,
-    `Scholar framing: ${profile.scholarFraming}`,
+    `Research direction: ${directionLabel}`,
+    `Scholar framing: ${directionDescription}`,
     `Evaluation axes: ${profile.evaluationAxes.join(", ")}`,
     `Evidence standards: ${profile.evidenceStandards.join(", ")}`,
     `Common failure modes: ${profile.failureModes.join(", ")}`,
