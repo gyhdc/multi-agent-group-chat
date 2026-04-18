@@ -11,9 +11,8 @@ Local-first multi-role discussion workspace for structured debate, critique, and
 
 ### 项目简介
 
-`Multi-Agent Group Chat` 是一个本地优先的多角色群聊讨论网站（暂时支持windows一键启动脚本）。你可以像搭建一个研究讨论群一样，为每个角色配置身份、目标、行为准则、发言风格和模型接入方式，让他们围绕同一议题进行短句、连续、对立但有依据的讨论。
-
-它特别适合以下场景：
+本项目是一个本地优先的多角色群聊讨论网站（暂时支持windows一键启动脚本）。你可以像搭建一个研究讨论群一样，为每个角色配置身份、目标、行为准则、发言风格和模型接入方式，让他们围绕同一议题进行短句、连续、对立但有依据的讨论。
+适合以下场景：
 
 - 审稿人 vs 导师
 - 方法论学者 vs 领域专家
@@ -21,7 +20,7 @@ Local-first multi-role discussion workspace for structured debate, critique, and
 - 需求评审 / 方案攻防 / 假设校验
 - 用户在讨论中途插入新证据、新数据、新约束
 
-系统会保留完整聊天记录，并由记录员角色生成阶段纪要与最终结论。
+系统会保留完整聊天记录，并由记录员角色生成阶段纪要与最终结论，并提供markdown格式的笔记下载。
 
 ### 核心特性
 
