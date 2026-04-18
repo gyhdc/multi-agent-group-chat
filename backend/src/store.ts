@@ -9,7 +9,21 @@ import {
   normalizePreset,
   normalizeRole,
 } from "./defaults";
-import { ChatMessage, DiscussionRoom, DiscussionSummary, InsightEntry, ProviderPreset, ResearchDirectionPreset } from "./types";
+import {
+  ActiveExchange,
+  ChatMessage,
+  DocumentOutlineNode,
+  DocumentSegment,
+  DocumentSummary,
+  DiscussionRoom,
+  DiscussionState,
+  DiscussionSummary,
+  InsightEntry,
+  PendingRequiredReply,
+  ProviderPreset,
+  ResearchDirectionPreset,
+  RoomDocumentAsset,
+} from "./types";
 
 const dataDir = path.resolve(__dirname, "../../data");
 const roomsFile = path.join(dataDir, "rooms.json");
@@ -54,9 +68,135 @@ function normalizeMessage(input: Partial<ChatMessage>, fallbackTurn: number): Ch
     replyToMessageId: input.replyToMessageId ?? null,
     replyToRoleName: input.replyToRoleName?.trim() ?? null,
     replyToExcerpt: input.replyToExcerpt?.trim() ?? null,
+    requiredReplyRoleId: input.requiredReplyRoleId ?? null,
+    requiredReplyRoleName: input.requiredReplyRoleName?.trim() ?? null,
     round: typeof input.round === "number" && Number.isFinite(input.round) ? input.round : 0,
     turn: typeof input.turn === "number" && Number.isFinite(input.turn) ? input.turn : fallbackTurn,
     createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeDocumentAsset(input: Partial<RoomDocumentAsset> | null | undefined): RoomDocumentAsset | null {
+  if (!input?.id || !input?.fileName || !input?.storedFileName || !input?.mimeType || !input?.fileKind) {
+    return null;
+  }
+
+  return {
+    id: input.id,
+    fileName: input.fileName,
+    storedFileName: input.storedFileName,
+    mimeType: input.mimeType,
+    fileKind: input.fileKind,
+    sizeBytes: typeof input.sizeBytes === "number" && Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
+    pageCount:
+      typeof input.pageCount === "number" && Number.isFinite(input.pageCount)
+        ? input.pageCount
+        : input.pageCount === null
+          ? null
+          : null,
+    charCount: typeof input.charCount === "number" && Number.isFinite(input.charCount) ? input.charCount : 0,
+    title: input.title?.trim() || input.fileName,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeDocumentSegment(input: Partial<DocumentSegment>, fallbackOrder: number): DocumentSegment | null {
+  if (!input?.id) {
+    return null;
+  }
+
+  return {
+    id: input.id,
+    kind: input.kind ?? "block",
+    title: input.title?.trim() || `Segment ${fallbackOrder + 1}`,
+    content: input.content?.trim() || "",
+    pageStart:
+      typeof input.pageStart === "number" && Number.isFinite(input.pageStart)
+        ? input.pageStart
+        : input.pageStart === null
+          ? null
+          : null,
+    pageEnd:
+      typeof input.pageEnd === "number" && Number.isFinite(input.pageEnd)
+        ? input.pageEnd
+        : input.pageEnd === null
+          ? null
+          : null,
+    level: typeof input.level === "number" && Number.isFinite(input.level) ? input.level : 0,
+    parentId: typeof input.parentId === "string" ? input.parentId : null,
+    path: Array.isArray(input.path) ? input.path.filter((value): value is string => typeof value === "string") : [],
+    order: typeof input.order === "number" && Number.isFinite(input.order) ? input.order : fallbackOrder,
+  };
+}
+
+function normalizeDocumentOutlineNode(input: Partial<DocumentOutlineNode>): DocumentOutlineNode | null {
+  if (!input?.id || !input.segmentId) {
+    return null;
+  }
+
+  return {
+    id: input.id,
+    segmentId: input.segmentId,
+    title: input.title?.trim() || "Untitled Node",
+    kind: input.kind ?? "block",
+    children: Array.isArray(input.children)
+      ? input.children
+          .map((child) => normalizeDocumentOutlineNode(child))
+          .filter((child): child is DocumentOutlineNode => Boolean(child))
+      : [],
+  };
+}
+
+function normalizeDocumentSummary(input: Partial<DocumentSummary> | null | undefined): DocumentSummary | null {
+  if (!input) {
+    return null;
+  }
+
+  return {
+    title: input.title?.trim() || "",
+    abstract: input.abstract?.trim() || "",
+    defaultTopic: input.defaultTopic?.trim() || "",
+  };
+}
+
+function normalizePendingRequiredReply(input: Partial<PendingRequiredReply>): PendingRequiredReply | null {
+  const sourceMessageId = input.sourceMessageId?.trim();
+  const targetRoleId = input.targetRoleId?.trim();
+  const targetRoleName = input.targetRoleName?.trim();
+
+  if (!sourceMessageId || !targetRoleId || !targetRoleName) {
+    return null;
+  }
+
+  return {
+    sourceMessageId,
+    targetRoleId,
+    targetRoleName,
+    reason: input.reason === "participant-direct-request" ? "participant-direct-request" : "user-direct-reply",
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeActiveExchange(input: Partial<ActiveExchange> | null | undefined): ActiveExchange | null {
+  if (!input?.id) {
+    return null;
+  }
+
+  return {
+    id: input.id,
+    reason:
+      input.reason === "user-message" || input.reason === "participant-forced-reply" ? input.reason : "topic-start",
+    triggerMessageId: typeof input.triggerMessageId === "string" ? input.triggerMessageId : null,
+    hardTargetRoleId: typeof input.hardTargetRoleId === "string" ? input.hardTargetRoleId : null,
+    respondedRoleIds: Array.isArray(input.respondedRoleIds)
+      ? input.respondedRoleIds.filter((roleId): roleId is string => typeof roleId === "string" && roleId.trim().length > 0)
+      : [],
+    followUpTurnsRemaining:
+      typeof input.followUpTurnsRemaining === "number" && Number.isFinite(input.followUpTurnsRemaining)
+        ? Math.max(0, Math.floor(input.followUpTurnsRemaining))
+        : 0,
+    openedAtTurn:
+      typeof input.openedAtTurn === "number" && Number.isFinite(input.openedAtTurn) ? Math.max(0, input.openedAtTurn) : 0,
   };
 }
 
@@ -135,9 +275,52 @@ function normalizeSummary(input: unknown): DiscussionSummary {
   };
 }
 
+function normalizeState(input: Partial<DiscussionState> | undefined, fallback: DiscussionState): DiscussionState {
+  const spokenParticipantRoleIds = Array.isArray(input?.spokenParticipantRoleIds)
+    ? input.spokenParticipantRoleIds.filter((roleId): roleId is string => typeof roleId === "string" && roleId.trim().length > 0)
+    : fallback.spokenParticipantRoleIds;
+  const pendingRequiredReplies = Array.isArray(input?.pendingRequiredReplies)
+    ? input.pendingRequiredReplies
+        .map((entry) => normalizePendingRequiredReply(entry))
+        .filter((entry): entry is PendingRequiredReply => Boolean(entry))
+    : fallback.pendingRequiredReplies;
+
+  return {
+    ...fallback,
+    ...(input ?? {}),
+    nextSpeakerIndex:
+      typeof input?.nextSpeakerIndex === "number" && Number.isFinite(input.nextSpeakerIndex)
+        ? input.nextSpeakerIndex
+        : fallback.nextSpeakerIndex,
+    totalTurns:
+      typeof input?.totalTurns === "number" && Number.isFinite(input.totalTurns) ? input.totalTurns : fallback.totalTurns,
+    lastActiveRoleId: typeof input?.lastActiveRoleId === "string" ? input.lastActiveRoleId : fallback.lastActiveRoleId,
+    spokenParticipantRoleIds,
+    pendingRequiredReplies,
+    activeExchange: normalizeActiveExchange(input?.activeExchange),
+  };
+}
+
 function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
   const base = createBlankRoom();
   const createdAt = input.createdAt ?? base.createdAt;
+  const normalizedDocumentAsset = normalizeDocumentAsset(input.documentAsset);
+  const normalizedDocumentSegments = Array.isArray(input.documentSegments)
+    ? input.documentSegments
+        .map((segment, index) => normalizeDocumentSegment(segment, index))
+        .filter((segment): segment is DocumentSegment => Boolean(segment))
+    : base.documentSegments;
+  const normalizedDocumentOutline = Array.isArray(input.documentOutline)
+    ? input.documentOutline
+        .map((node) => normalizeDocumentOutlineNode(node))
+        .filter((node): node is DocumentOutlineNode => Boolean(node))
+    : base.documentOutline;
+  const normalizedSelectedDocumentSegmentIds = Array.isArray(input.selectedDocumentSegmentIds)
+    ? input.selectedDocumentSegmentIds.filter(
+        (segmentId): segmentId is string => typeof segmentId === "string" && segmentId.trim().length > 0,
+      )
+    : base.selectedDocumentSegmentIds;
+
   return {
     ...base,
     ...input,
@@ -160,13 +343,29 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
         : base.maxRounds,
     checkpointEveryRound:
       typeof input.checkpointEveryRound === "boolean" ? input.checkpointEveryRound : base.checkpointEveryRound,
+    documentAsset: normalizedDocumentAsset,
+    documentSegments: normalizedDocumentSegments,
+    documentOutline: normalizedDocumentOutline,
+    documentSummary: normalizeDocumentSummary(input.documentSummary),
+    documentParseStatus:
+      input.documentParseStatus === "processing" ||
+      input.documentParseStatus === "ready" ||
+      input.documentParseStatus === "partial" ||
+      input.documentParseStatus === "failed"
+        ? input.documentParseStatus
+        : base.documentParseStatus,
+    documentWarnings: Array.isArray(input.documentWarnings)
+      ? input.documentWarnings.filter((warning): warning is string => typeof warning === "string")
+      : base.documentWarnings,
+    selectedDocumentSegmentIds: normalizedSelectedDocumentSegmentIds,
+    documentDiscussionMode:
+      input.documentDiscussionMode === "whole-document" || input.documentDiscussionMode === "selected-segments"
+        ? input.documentDiscussionMode
+        : base.documentDiscussionMode,
     roles: Array.isArray(input.roles) ? input.roles.map((role) => normalizeRole(role)) : base.roles,
     messages: Array.isArray(input.messages) ? input.messages.map((message, index) => normalizeMessage(message, index + 1)) : [],
     summary: normalizeSummary(input.summary),
-    state: {
-      ...base.state,
-      ...(input.state ?? {}),
-    },
+    state: normalizeState(input.state, base.state),
     createdAt,
     updatedAt: input.updatedAt ?? createdAt,
   };

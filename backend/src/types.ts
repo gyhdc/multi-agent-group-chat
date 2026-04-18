@@ -2,6 +2,10 @@ export type ProviderType = "mock" | "openai-compatible" | "custom-http" | "codex
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type DiscussionLanguage = "zh-CN" | "en-US";
 export type ResearchDirectionKey = string;
+export type DocumentFileKind = "pdf" | "docx" | "txt" | "md";
+export type DocumentParseStatus = "idle" | "processing" | "ready" | "partial" | "failed";
+export type DocumentDiscussionMode = "whole-document" | "selected-segments";
+export type DocumentSegmentKind = "document" | "section" | "page" | "block" | "table";
 export type RoleTemplateKey =
   | "reviewer"
   | "advisor"
@@ -46,11 +50,64 @@ export interface ResearchDirectionPreset {
   updatedAt: string;
 }
 
+export interface RoomDocumentAsset {
+  id: string;
+  fileName: string;
+  storedFileName: string;
+  mimeType: string;
+  fileKind: DocumentFileKind;
+  sizeBytes: number;
+  pageCount: number | null;
+  charCount: number;
+  title: string;
+  createdAt: string;
+}
+
+export interface DocumentSegment {
+  id: string;
+  kind: DocumentSegmentKind;
+  title: string;
+  content: string;
+  pageStart: number | null;
+  pageEnd: number | null;
+  level: number;
+  parentId: string | null;
+  path: string[];
+  order: number;
+}
+
+export interface DocumentOutlineNode {
+  id: string;
+  segmentId: string;
+  title: string;
+  kind: DocumentSegmentKind;
+  children: DocumentOutlineNode[];
+}
+
+export interface DocumentSummary {
+  title: string;
+  abstract: string;
+  defaultTopic: string;
+}
+
+export interface DocumentParseResult {
+  asset: RoomDocumentAsset;
+  segments: DocumentSegment[];
+  outline: DocumentOutlineNode[];
+  summary: DocumentSummary;
+  warnings: string[];
+  status: DocumentParseStatus;
+  discussionMode: DocumentDiscussionMode;
+  defaultSelectedSegmentIds: string[];
+}
+
 export type DiscussionRoleKind = "participant" | "recorder";
 export type RoomStatus = "idle" | "running" | "stopped" | "completed";
 export type DiscussionPhase = "participants" | "recorder" | "final";
 export type MessageKind = "participant" | "recorder" | "user" | "system";
 export type InsightKind = "checkpoint" | "final";
+export type RequiredReplyReason = "user-direct-reply" | "participant-direct-request";
+export type ActiveExchangeReason = "topic-start" | "user-message" | "participant-forced-reply";
 
 export interface DiscussionRole {
   id: string;
@@ -76,9 +133,29 @@ export interface ChatMessage {
   replyToMessageId?: string | null;
   replyToRoleName?: string | null;
   replyToExcerpt?: string | null;
+  requiredReplyRoleId?: string | null;
+  requiredReplyRoleName?: string | null;
   round: number;
   turn: number;
   createdAt: string;
+}
+
+export interface PendingRequiredReply {
+  sourceMessageId: string;
+  targetRoleId: string;
+  targetRoleName: string;
+  reason: RequiredReplyReason;
+  createdAt: string;
+}
+
+export interface ActiveExchange {
+  id: string;
+  reason: ActiveExchangeReason;
+  triggerMessageId: string | null;
+  hardTargetRoleId: string | null;
+  respondedRoleIds: string[];
+  followUpTurnsRemaining: number;
+  openedAtTurn: number;
 }
 
 export interface InsightEntry {
@@ -103,6 +180,9 @@ export interface DiscussionState {
   nextSpeakerIndex: number;
   totalTurns: number;
   lastActiveRoleId: string | null;
+  spokenParticipantRoleIds: string[];
+  pendingRequiredReplies: PendingRequiredReply[];
+  activeExchange: ActiveExchange | null;
 }
 
 export interface DiscussionRoom {
@@ -118,6 +198,14 @@ export interface DiscussionRoom {
   autoRunDelaySeconds: number;
   maxRounds: number;
   checkpointEveryRound: boolean;
+  documentAsset: RoomDocumentAsset | null;
+  documentSegments: DocumentSegment[];
+  documentOutline: DocumentOutlineNode[];
+  documentSummary: DocumentSummary | null;
+  documentParseStatus: DocumentParseStatus;
+  documentWarnings: string[];
+  selectedDocumentSegmentIds: string[];
+  documentDiscussionMode: DocumentDiscussionMode;
   roles: DiscussionRole[];
   messages: ChatMessage[];
   summary: DiscussionSummary;

@@ -21,6 +21,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function requestForm<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init);
+
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(errorBody?.error || `Request failed: ${response.status}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
+}
+
 export const api = {
   listRooms: () => request<DiscussionRoom[]>("/api/rooms"),
   createRoom: (room?: Partial<DiscussionRoom>) =>
@@ -61,6 +76,34 @@ export const api = {
     request<DiscussionRoom>(`/api/rooms/${roomId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content, replyToMessageId: replyToMessageId ?? null }),
+    }),
+  uploadRoomDocument: (roomId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("document", file);
+    return requestForm<DiscussionRoom>(`/api/rooms/${roomId}/document`, {
+      method: "POST",
+      body: formData,
+    });
+  },
+  deleteRoomDocument: (roomId: string) =>
+    request<DiscussionRoom>(`/api/rooms/${roomId}/document`, {
+      method: "DELETE",
+    }),
+  updateRoomDocumentFocus: (
+    roomId: string,
+    payload: { selectedSegmentIds?: string[]; discussionMode?: DiscussionRoom["documentDiscussionMode"] },
+  ) =>
+    request<DiscussionRoom>(`/api/rooms/${roomId}/document/focus`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  generateDefaultDocumentTopic: (roomId: string) =>
+    request<DiscussionRoom>(`/api/rooms/${roomId}/document/topic-default`, {
+      method: "POST",
+    }),
+  generateRecorderDocumentTopic: (roomId: string) =>
+    request<DiscussionRoom>(`/api/rooms/${roomId}/document/topic-recorder`, {
+      method: "POST",
     }),
   listProviderPresets: () => request<ProviderPreset[]>("/api/provider-presets"),
   listResearchDirections: () => request<ResearchDirectionPreset[]>("/api/research-directions"),

@@ -4,6 +4,7 @@ backend/dist/
 output/
 tmp/
 data/*.json
+data/documents/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts

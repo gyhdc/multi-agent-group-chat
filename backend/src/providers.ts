@@ -3,22 +3,29 @@ import { spawn } from "child_process";
 import fs from "fs/promises";
 import path from "path";
 import { getResearchProfile, getRoleTemplateProfile } from "./discussionCatalog";
+import { getDocumentContextForPrompt } from "./documents";
 import {
   ChatMessage,
   DiscussionLanguage,
   DiscussionRole,
   DiscussionRoom,
   InsightEntry,
+  PendingRequiredReply,
 } from "./types";
 
 const APP_ROOT = path.resolve(__dirname, "../..");
-const RUNNER_DIR = path.join(APP_ROOT, "tmp", "provider-runtime");
 
 export interface ParticipantReply {
   content: string;
   replyToMessageId: string | null;
   replyToRoleName: string | null;
   replyToExcerpt: string | null;
+  forceReplyRoleId: string | null;
+}
+
+interface ParticipantGenerationOptions {
+  forcedReply?: PendingRequiredReply | null;
+  selectionReason?: string;
 }
 
 interface TextPromptPayload {
@@ -29,9 +36,16 @@ interface TextPromptPayload {
 
 interface ReplyCandidate {
   id: string;
+  roleId: string;
   roleName: string;
   excerpt: string;
   kind: ChatMessage["kind"];
+}
+
+interface ForceReplyCandidate {
+  id: string;
+  roleName: string;
+  goal: string;
 }
 
 function trimText(content: string, maxLength = 360): string {
@@ -40,6 +54,10 @@ function trimText(content: string, maxLength = 360): string {
     return normalized;
   }
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
+}
+
+function getParticipants(room: DiscussionRoom): DiscussionRole[] {
+  return room.roles.filter((role) => role.enabled && role.kind === "participant");
 }
 
 function getOutputLanguageLabel(language: DiscussionLanguage): string {
@@ -60,15 +78,26 @@ function getRecentInsights(room: DiscussionRoom, limit = 4): InsightEntry[] {
   return room.summary.insights.slice(-limit);
 }
 
-function getReplyCandidates(room: DiscussionRoom, limit = 6): ReplyCandidate[] {
+function getReplyCandidates(room: DiscussionRoom, limit = 8): ReplyCandidate[] {
   return room.messages
     .filter((message) => message.kind !== "system")
     .slice(-limit)
     .map((message) => ({
       id: message.id,
+      roleId: message.roleId,
       roleName: message.roleName,
       excerpt: trimText(message.content, 110),
       kind: message.kind,
+    }));
+}
+
+function getForceReplyCandidates(room: DiscussionRoom, role: DiscussionRole): ForceReplyCandidate[] {
+  return getParticipants(room)
+    .filter((participant) => participant.id !== role.id)
+    .map((participant) => ({
+      id: participant.id,
+      roleName: participant.name,
+      goal: trimText(participant.goal || "No goal provided.", 80),
     }));
 }
 
@@ -79,6 +108,17 @@ function findMessage(room: DiscussionRoom, messageId: string | null | undefined)
   return room.messages.find((message) => message.id === messageId) ?? null;
 }
 
+function normalizeForceReplyTarget(room: DiscussionRoom, role: DiscussionRole, requestedRoleId: string | null | undefined): string | null {
+  if (!requestedRoleId || requestedRoleId === role.id) {
+    return null;
+  }
+
+  const target = room.roles.find(
+    (candidate) => candidate.enabled && candidate.kind === "participant" && candidate.id === requestedRoleId,
+  );
+  return target?.id ?? null;
+}
+
 function toReplyMetadata(room: DiscussionRoom, messageId: string | null): ParticipantReply {
   const target = findMessage(room, messageId);
   return {
@@ -86,16 +126,41 @@ function toReplyMetadata(room: DiscussionRoom, messageId: string | null): Partic
     replyToMessageId: target?.id ?? null,
     replyToRoleName: target?.roleName ?? null,
     replyToExcerpt: target ? trimText(target.content, 110) : null,
+    forceReplyRoleId: null,
   };
 }
 
-function pickFallbackReply(room: DiscussionRoom): ParticipantReply {
+function pickFallbackReply(room: DiscussionRoom, forcedReply?: PendingRequiredReply | null): ParticipantReply {
+  if (forcedReply) {
+    return toReplyMetadata(room, forcedReply.sourceMessageId);
+  }
+
   const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
   if (latestUser) {
     return toReplyMetadata(room, latestUser.id);
   }
+
   const latestParticipant = [...room.messages].reverse().find((message) => message.kind === "participant");
   return toReplyMetadata(room, latestParticipant?.id ?? null);
+}
+
+function applyForcedReplyConstraints(
+  room: DiscussionRoom,
+  reply: ParticipantReply,
+  forcedReply?: PendingRequiredReply | null,
+): ParticipantReply {
+  if (!forcedReply) {
+    return reply;
+  }
+
+  const meta = toReplyMetadata(room, forcedReply.sourceMessageId);
+  return {
+    ...reply,
+    replyToMessageId: meta.replyToMessageId,
+    replyToRoleName: meta.replyToRoleName,
+    replyToExcerpt: meta.replyToExcerpt,
+    forceReplyRoleId: null,
+  };
 }
 
 function formatResearchContext(room: DiscussionRoom): string {
@@ -117,7 +182,52 @@ function formatResearchContext(room: DiscussionRoom): string {
   return lines.join("\n");
 }
 
-function buildParticipantSystemPrompt(room: DiscussionRoom, role: DiscussionRole, candidates: ReplyCandidate[]): string {
+function formatDocumentContext(room: DiscussionRoom): string {
+  const context = getDocumentContextForPrompt(room);
+  return context ? `Document context:\n${context}` : "Document context:\nNone.";
+}
+
+function formatActiveExchangeContext(room: DiscussionRoom, role: DiscussionRole, selectionReason?: string): string {
+  const exchange = room.state.activeExchange;
+  if (!exchange) {
+    return [
+      "Active exchange reason: none",
+      "Trigger message: none",
+      "Hard target role: none",
+      "Responded roles in current exchange: none",
+      `Recommended reason you should speak now: ${selectionReason ?? "No explicit recommendation."}`,
+    ].join("\n");
+  }
+
+  const triggerMessage = exchange.triggerMessageId ? findMessage(room, exchange.triggerMessageId) : null;
+  const hardTargetRole = exchange.hardTargetRoleId
+    ? room.roles.find((candidate) => candidate.id === exchange.hardTargetRoleId)
+    : null;
+  const respondedRoles = exchange.respondedRoleIds
+    .map((roleId) => room.roles.find((candidate) => candidate.id === roleId)?.name)
+    .filter((name): name is string => Boolean(name));
+
+  return [
+    `Active exchange reason: ${exchange.reason}`,
+    triggerMessage
+      ? `Trigger message:\n${triggerMessage.roleName}: ${triggerMessage.content}`
+      : "Trigger message:\nNone.",
+    `Hard target role: ${hardTargetRole?.name ?? "None."}`,
+    `Responded roles in current exchange: ${respondedRoles.length > 0 ? respondedRoles.join(", ") : "None."}`,
+    `Recommended reason you should speak now: ${selectionReason ?? "No explicit recommendation."}`,
+    `You have ${exchange.followUpTurnsRemaining} follow-up turns remaining in this exchange after the hard target response.`,
+    `You are${exchange.hardTargetRoleId === role.id ? "" : " not"} the hard target role for this exchange.`,
+  ].join("\n\n");
+}
+
+function buildParticipantSystemPrompt(
+  room: DiscussionRoom,
+  role: DiscussionRole,
+  replyCandidates: ReplyCandidate[],
+  forceReplyCandidates: ForceReplyCandidate[],
+  forcedReply?: PendingRequiredReply | null,
+  selectionReason?: string,
+): string {
   const template = getRoleTemplateProfile(role.roleTemplateKey);
   const templateLines = template
     ? [
@@ -127,6 +237,21 @@ function buildParticipantSystemPrompt(room: DiscussionRoom, role: DiscussionRole
         `Non-negotiable boundary: ${template.nonNegotiable}`,
       ]
     : ["Template identity: custom participant", "Identity contract: act like a serious scholar with a fixed stake."];
+
+  const mandatoryReplyLines = forcedReply
+    ? [
+        "",
+        "This turn is a mandatory reply.",
+        `- You must directly answer message ${forcedReply.sourceMessageId}.`,
+        "- Set replyToMessageId to that mandatory source message.",
+        "- Set forceReplyRoleId to null on this turn.",
+      ]
+    : [
+        "",
+        "Optional escalation rule:",
+        "- You may set forceReplyRoleId to one participant if that person must directly answer your point next.",
+        "- Only do this when a direct response is genuinely necessary.",
+      ];
 
   return [
     "You are a serious scholar in a multi-party research discussion.",
@@ -145,16 +270,26 @@ function buildParticipantSystemPrompt(room: DiscussionRoom, role: DiscussionRole
     "- Reply as the selected role, not as a neutral moderator.",
     "- Use the research direction's evidence standards and review criteria.",
     "- If you reply to a message, your content must actually engage that message's claim or evidence.",
+    "- You may either reply to a specific message or publish an independent view when no direct reply is needed.",
     "- Do not give empty praise, vague brainstorming, or generic 'it can be improved' language.",
     "- Keep the content to 2-4 short sentences.",
     "- Do not use markdown bullets.",
     "- Output valid JSON only.",
-    `- Use one reply target from the candidate list below, or null if none fits. Candidate count: ${candidates.length}.`,
-    '- Output schema: {"replyToMessageId":"candidate-id-or-null","content":"your short message"}',
+    `- replyToMessageId must be one candidate id or null. Reply candidate count: ${replyCandidates.length}.`,
+    `- forceReplyRoleId must be one participant id or null. Force-reply candidate count: ${forceReplyCandidates.length}.`,
+    ...mandatoryReplyLines,
+    '- Output schema: {"replyToMessageId":"candidate-id-or-null","forceReplyRoleId":"participant-role-id-or-null","content":"your short message"}',
   ].join("\n");
 }
 
-function buildParticipantUserPrompt(room: DiscussionRoom, role: DiscussionRole, candidates: ReplyCandidate[]): string {
+function buildParticipantUserPrompt(
+  room: DiscussionRoom,
+  role: DiscussionRole,
+  replyCandidates: ReplyCandidate[],
+  forceReplyCandidates: ForceReplyCandidate[],
+  forcedReply?: PendingRequiredReply | null,
+  selectionReason?: string,
+): string {
   const recentMessages = getRecentMessages(room, 12)
     .map((message) => `${message.roleName}: ${message.content}`)
     .join("\n");
@@ -162,9 +297,13 @@ function buildParticipantUserPrompt(room: DiscussionRoom, role: DiscussionRole, 
     .map((insight) => `${insight.title}: ${insight.content}`)
     .join("\n");
   const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
-  const candidateLines = candidates.length
-    ? candidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.excerpt}`).join("\n")
+  const replyCandidateLines = replyCandidates.length
+    ? replyCandidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.excerpt}`).join("\n")
     : "No reply candidates.";
+  const forceReplyCandidateLines = forceReplyCandidates.length
+    ? forceReplyCandidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.goal}`).join("\n")
+    : "No force-reply candidates.";
+  const forcedTargetMessage = forcedReply ? findMessage(room, forcedReply.sourceMessageId) : null;
 
   return [
     `Discussion language: ${getOutputLanguageLabel(room.discussionLanguage)}`,
@@ -172,17 +311,28 @@ function buildParticipantUserPrompt(room: DiscussionRoom, role: DiscussionRole, 
     `Decision objective:\n${room.objective}`,
     `Current round: ${room.state.currentRound}`,
     formatResearchContext(room),
+    formatDocumentContext(room),
+    formatActiveExchangeContext(room, role, selectionReason),
     `Your specific goal:\n${role.goal || "Not provided."}`,
     latestUser ? `Latest user evidence to prioritize:\n${latestUser.roleName}: ${latestUser.content}` : "Latest user evidence to prioritize:\nNone.",
+    forcedTargetMessage
+      ? `Mandatory reply to fulfill:\n${forcedTargetMessage.id} | ${forcedTargetMessage.roleName} | ${forcedTargetMessage.content}`
+      : "Mandatory reply to fulfill:\nNone.",
     recentInsights ? `Recent notes:\n${recentInsights}` : "Recent notes:\nNone yet.",
     recentMessages ? `Recent messages:\n${recentMessages}` : "Recent messages:\nNone yet.",
-    `Reply candidates:\n${candidateLines}`,
+    `Reply candidates:\n${replyCandidateLines}`,
+    `Force-reply candidates:\n${forceReplyCandidateLines}`,
     [
       "Your task:",
       "1. Decide whether the latest user evidence changes the room's judgment.",
-      "2. Pick the best reply target from the candidate list if one should be addressed directly.",
-      "3. Speak from your role's goal, evidence standard, and non-negotiable boundary.",
-      "4. Push the discussion toward a sharper, academically defensible conclusion.",
+      forcedReply
+        ? "2. Directly answer the mandatory target message."
+        : "2. Pick the best reply target if one should be addressed directly, or null if a free-standing point is better.",
+      forcedReply
+        ? "3. Do not assign a new mandatory reply on this turn."
+        : "3. Optionally assign one participant to reply next if their direct response is necessary.",
+      "4. Speak from your role's goal, evidence standard, and non-negotiable boundary.",
+      "5. Push the discussion toward a sharper, academically defensible conclusion.",
       "Output only valid JSON.",
     ].join("\n"),
   ].join("\n\n");
@@ -224,9 +374,40 @@ function buildRecorderUserPrompt(room: DiscussionRoom, finalMode: boolean): stri
     `Decision objective:\n${room.objective}`,
     `Current round: ${room.state.currentRound}`,
     formatResearchContext(room),
+    formatDocumentContext(room),
     latestUser ? `Latest user evidence:\n${latestUser.content}` : "Latest user evidence:\nNone.",
     recentMessages ? `Recent discussion messages:\n${recentMessages}` : "Recent discussion messages:\nNone yet.",
     finalMode ? "Produce the final conclusion." : "Produce a checkpoint note.",
+  ].join("\n\n");
+}
+
+function buildRecorderTopicSystemPrompt(room: DiscussionRoom, role: DiscussionRole): string {
+  return [
+    "You are the recorder for a serious document-centered discussion workspace.",
+    "Your task is to write one concise discussion topic that tells the room what to debate about this document.",
+    getOutputLanguageRule(room.discussionLanguage),
+    "",
+    `Recorder name: ${role.name}`,
+    `Recorder persona: ${role.persona || "Neutral recorder."}`,
+    `Recorder goal: ${role.goal || "Produce high-signal framing."}`,
+    "",
+    "Hard rules:",
+    "- Produce a single sentence topic only.",
+    "- Focus on the document and the currently selected scope, not generic brainstorming.",
+    "- The topic should be specific enough to guide a real discussion.",
+    "- Do not use markdown bullets or labels.",
+  ].join("\n");
+}
+
+function buildRecorderTopicUserPrompt(room: DiscussionRoom): string {
+  const defaultTopic = room.documentSummary?.defaultTopic?.trim() || "None.";
+  return [
+    `Discussion language: ${getOutputLanguageLabel(room.discussionLanguage)}`,
+    `Current room objective:\n${room.objective}`,
+    formatResearchContext(room),
+    formatDocumentContext(room),
+    `Default local topic suggestion:\n${defaultTopic}`,
+    "Generate one improved discussion topic sentence for this document.",
   ].join("\n\n");
 }
 
@@ -257,7 +438,7 @@ function extractJsonObject(raw: string): string | null {
   return null;
 }
 
-function parseParticipantReply(raw: string, room: DiscussionRoom): ParticipantReply | null {
+function parseParticipantReply(raw: string, room: DiscussionRoom, role: DiscussionRole): ParticipantReply | null {
   const jsonBlock = extractJsonObject(raw);
   if (!jsonBlock) {
     return null;
@@ -266,6 +447,7 @@ function parseParticipantReply(raw: string, room: DiscussionRoom): ParticipantRe
   try {
     const parsed = JSON.parse(jsonBlock) as {
       replyToMessageId?: string | null;
+      forceReplyRoleId?: string | null;
       content?: string;
       message?: string;
       output?: string;
@@ -279,14 +461,15 @@ function parseParticipantReply(raw: string, room: DiscussionRoom): ParticipantRe
     return {
       ...meta,
       content: trimText(content),
+      forceReplyRoleId: normalizeForceReplyTarget(room, role, parsed.forceReplyRoleId),
     };
   } catch {
     return null;
   }
 }
 
-function finalizeParticipantReply(raw: string, room: DiscussionRoom): ParticipantReply {
-  const parsed = parseParticipantReply(raw, room);
+function finalizeParticipantReply(raw: string, room: DiscussionRoom, role: DiscussionRole): ParticipantReply {
+  const parsed = parseParticipantReply(raw, room, role);
   if (parsed) {
     return parsed;
   }
@@ -295,38 +478,85 @@ function finalizeParticipantReply(raw: string, room: DiscussionRoom): Participan
   return {
     ...fallback,
     content: trimText(raw),
+    forceReplyRoleId: null,
   };
 }
 
-function buildMockParticipantReply(room: DiscussionRoom, role: DiscussionRole): ParticipantReply {
-  const profile = getResearchProfile(room.researchDirectionKey);
-  const template = getRoleTemplateProfile(role.roleTemplateKey);
-  const reply = pickFallbackReply(room);
-  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
-  const language = room.discussionLanguage;
-
-  if (language === "zh-CN") {
-    const content =
-      latestUser && reply.replyToMessageId
-        ? `先回应这条新证据：它${template?.key === "reviewer" ? "还不足以直接改变结论" : "确实改变了讨论重心"}。接下来我会围绕${profile.evaluationAxes[0]}和${profile.evidenceStandards[0]}继续推进判断。`
-        : template?.key === "reviewer"
-          ? `我仍然卡在${profile.failureModes[0]}。没有更扎实的${profile.evidenceStandards[0]}，这个结论还站不稳。`
-          : template?.key === "advisor"
-            ? `可以继续，但必须把主张收缩到一个可验证命题。下一步要直接补上${profile.evidenceStandards[0]}。`
-            : `我更关心${profile.evaluationAxes[0]}。如果这点说不清，后面的争论都会发散。`;
-    return { ...reply, content: trimText(content, 220) };
+function getMockForceReplyTarget(room: DiscussionRoom, role: DiscussionRole): DiscussionRole | null {
+  const participants = getParticipants(room);
+  if (participants.length < 3) {
+    return null;
   }
 
-  const content =
-    latestUser && reply.replyToMessageId
-      ? `I need to address this new evidence first. It changes the discussion focus, but it still has to clear ${profile.evidenceStandards[0]}.`
-      : template?.key === "reviewer"
-        ? `${profile.mockCritic} The weakest point is still ${profile.failureModes[0]}.`
-        : template?.key === "advisor"
-          ? `${profile.mockBuilder} I would narrow the claim and tie it directly to ${profile.evidenceStandards[0]}.`
-          : profile.mockNeutral;
+  const latestParticipant = [...room.messages].reverse().find((message) => message.kind === "participant" && message.roleId !== role.id);
+  if (!latestParticipant) {
+    return null;
+  }
 
-  return { ...reply, content: trimText(content, 220) };
+  const currentIndex = participants.findIndex((participant) => participant.id === role.id);
+  if (currentIndex < 0) {
+    return null;
+  }
+
+  for (let offset = 1; offset < participants.length; offset += 1) {
+    const candidate = participants[(currentIndex + offset) % participants.length];
+    if (candidate.id !== role.id) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function buildMockParticipantReply(
+  room: DiscussionRoom,
+  role: DiscussionRole,
+  options: ParticipantGenerationOptions = {},
+): ParticipantReply {
+  const forcedReply = options.forcedReply ?? null;
+  const profile = getResearchProfile(room.researchDirectionKey);
+  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
+  const reply = pickFallbackReply(room, forcedReply);
+  const forceReplyTarget = !forcedReply && !latestUser ? getMockForceReplyTarget(room, role) : null;
+
+  if (room.discussionLanguage === "zh-CN") {
+    const content = forcedReply
+      ? `我先直接回应这条点名意见：这条新证据会改变讨论重心，但还要继续按${profile.evidenceStandards[0]}重新判断。我的当前立场会相应收缩，而不是照旧重复前面的结论。`
+      : latestUser && reply.replyToMessageId
+        ? `先回应这条新证据：它${template?.key === "reviewer" ? "会改变我对风险的判断，但还不足以直接放宽标准" : "确实改变了下一步优先级，我会据此调整原先观点"}。接下来我会继续围绕${profile.evaluationAxes[0]}和${profile.evidenceStandards[0]}推进结论。`
+        : forceReplyTarget
+          ? `我先给出当前判断：关键仍在${profile.evaluationAxes[0]}。接下来请${forceReplyTarget.name}直接回应这条论点，明确它是否足以通过${profile.evidenceStandards[0]}。`
+          : template?.key === "reviewer"
+            ? `我仍然卡在${profile.failureModes[0]}。没有更扎实的${profile.evidenceStandards[0]}，这个结论还站不稳。`
+            : template?.key === "advisor"
+              ? `可以继续，但必须把主张收缩到一个可验证命题。下一步要直接补上${profile.evidenceStandards[0]}。`
+              : `我更关心${profile.evaluationAxes[0]}。如果这点说不清，后面的争论都会发散。`;
+
+    return {
+      ...reply,
+      content: trimText(content, 220),
+      forceReplyRoleId: forceReplyTarget?.id ?? null,
+    };
+  }
+
+  const content = forcedReply
+    ? `I need to answer this directed challenge first. The new evidence changes the discussion focus, but it still has to clear ${profile.evidenceStandards[0]} before I fully revise the judgment.`
+    : latestUser && reply.replyToMessageId
+      ? `I need to address this new evidence first. It shifts the discussion focus, but it still has to clear ${profile.evidenceStandards[0]}.`
+      : forceReplyTarget
+        ? `My current view still turns on ${profile.evaluationAxes[0]}. ${forceReplyTarget.name} should answer this point directly before the room moves on.`
+        : template?.key === "reviewer"
+          ? `${profile.mockCritic} The weakest point is still ${profile.failureModes[0]}.`
+          : template?.key === "advisor"
+            ? `${profile.mockBuilder} I would narrow the claim and tie it directly to ${profile.evidenceStandards[0]}.`
+            : profile.mockNeutral;
+
+  return {
+    ...reply,
+    content: trimText(content, 220),
+    forceReplyRoleId: forceReplyTarget?.id ?? null,
+  };
 }
 
 function buildMockRecorderMessage(room: DiscussionRoom, finalMode: boolean): string {
@@ -339,7 +569,7 @@ function buildMockRecorderMessage(room: DiscussionRoom, finalMode: boolean): str
         [
           "最终判断：这个方向可以继续，但必须更收缩、更可验证。",
           `判断依据：讨论已集中到 ${profile.evaluationAxes[0]}，但 ${profile.failureModes[0]} 仍未完全消除。`,
-          latestUser ? `用户证据影响：最新用户证据改变了讨论重心，但尚未单独构成决定性证据。` : "用户证据影响：本轮没有新的用户证据改写判断。",
+          latestUser ? "用户证据影响：最新用户证据改变了讨论重心，但尚未单独构成决定性证据。" : "用户证据影响：本轮没有新的用户证据改写判断。",
           `下一步：补上 ${profile.evidenceStandards[0]}，再决定是否进入更强结论。`,
         ].join("\n"),
         420,
@@ -418,7 +648,7 @@ async function requestCustomHttp(
   room: DiscussionRoom,
   role: DiscussionRole,
   payload: TextPromptPayload,
-): Promise<{ content: string; replyToMessageId?: string | null }> {
+): Promise<{ content: string; replyToMessageId?: string | null; forceReplyRoleId?: string | null }> {
   const response = await fetch(role.provider.endpoint, {
     method: "POST",
     headers: {
@@ -441,6 +671,7 @@ async function requestCustomHttp(
     message?: string;
     output?: string;
     replyToMessageId?: string | null;
+    forceReplyRoleId?: string | null;
   };
   const content = data.content ?? data.message ?? data.output;
   if (!content?.trim()) {
@@ -449,6 +680,7 @@ async function requestCustomHttp(
   return {
     content,
     replyToMessageId: data.replyToMessageId ?? null,
+    forceReplyRoleId: data.forceReplyRoleId ?? null,
   };
 }
 
@@ -504,7 +736,7 @@ async function runCommand(
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(resolveSpawnCommand(command), resolveSpawnArgs(command, args), {
       cwd: workingDirectory,
       env: process.env,
       stdio: "pipe",
@@ -553,11 +785,46 @@ async function runCommand(
   });
 }
 
-async function requestCodexCli(role: DiscussionRole, promptText: string): Promise<string> {
-  await fs.mkdir(RUNNER_DIR, { recursive: true });
+function isWindowsCmdLauncher(command: string): boolean {
+  return process.platform === "win32" && /\.(cmd|bat)$/i.test(command.trim());
+}
 
-  const outputFile = path.join(RUNNER_DIR, `${randomUUID()}.txt`);
+function quoteWindowsCmdArg(value: string): string {
+  if (!value) {
+    return '""';
+  }
+
+  if (!/[\s"&<>|^()]/.test(value)) {
+    return value;
+  }
+
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function resolveSpawnCommand(command: string): string {
+  if (isWindowsCmdLauncher(command)) {
+    return process.env.ComSpec || "cmd.exe";
+  }
+
+  return command;
+}
+
+function resolveSpawnArgs(command: string, args: string[]): string[] {
+  if (!isWindowsCmdLauncher(command)) {
+    return args;
+  }
+
+  const commandLine = [command, ...args].map(quoteWindowsCmdArg).join(" ");
+  return ["/d", "/s", "/c", commandLine];
+}
+
+async function requestCodexCli(role: DiscussionRole, promptText: string): Promise<string> {
   const workingDirectory = role.provider.workingDirectory.trim() || APP_ROOT;
+  const runtimeDir = path.join(workingDirectory, ".codex-provider-runtime");
+  const outputFileName = `${randomUUID()}.txt`;
+  const outputFile = path.join(runtimeDir, outputFileName);
+  const outputFileArg = path.join(".codex-provider-runtime", outputFileName);
+  await fs.mkdir(runtimeDir, { recursive: true });
   const launcherArgs = parseArgsString(role.provider.launcherArgs || "");
   const args = [
     ...launcherArgs,
@@ -566,12 +833,11 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
     "never",
     "--ephemeral",
     "--output-last-message",
-    outputFile,
+    outputFileArg,
     "--sandbox",
     role.provider.sandboxMode,
     ...(role.provider.skipGitRepoCheck ? ["--skip-git-repo-check"] : []),
     ...(role.provider.model.trim() ? ["-m", role.provider.model.trim()] : []),
-    ...(workingDirectory ? ["--cd", workingDirectory] : []),
     "-",
   ];
 
@@ -580,7 +846,7 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
       role.provider.command.trim() || "codex",
       args,
       promptText,
-      APP_ROOT,
+      workingDirectory,
       role.provider.timeoutMs,
     );
 
@@ -605,15 +871,33 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
       );
     }
 
+    if (/EPERM|EACCES|Access is denied/i.test(message) && process.platform === "win32" && role.provider.command.trim() === "codex") {
+      throw new Error(
+        "The Windows Store `codex` app alias could not be spawned here. On Windows, switch the preset to `command = D:\\nodejs\\npx.cmd` and `launcherArgs = -y @openai/codex`.",
+      );
+    }
+
     throw error;
   }
 }
 
-function buildParticipantPromptPayload(room: DiscussionRoom, role: DiscussionRole): TextPromptPayload {
-  const candidates = getReplyCandidates(room);
+function buildParticipantPromptPayload(
+  room: DiscussionRoom,
+  role: DiscussionRole,
+  options: ParticipantGenerationOptions = {},
+): TextPromptPayload {
+  const replyCandidates = getReplyCandidates(room);
+  const forceReplyCandidates = getForceReplyCandidates(room, role);
   return {
-    system: buildParticipantSystemPrompt(room, role, candidates),
-    user: buildParticipantUserPrompt(room, role, candidates),
+    system: buildParticipantSystemPrompt(
+      room,
+      role,
+      replyCandidates,
+      forceReplyCandidates,
+      options.forcedReply,
+      options.selectionReason,
+    ),
+    user: buildParticipantUserPrompt(room, role, replyCandidates, forceReplyCandidates, options.forcedReply, options.selectionReason),
   };
 }
 
@@ -625,25 +909,34 @@ function buildRecorderPromptPayload(room: DiscussionRoom, role: DiscussionRole, 
   };
 }
 
-export async function generateParticipantContent(room: DiscussionRoom, role: DiscussionRole): Promise<ParticipantReply> {
+export async function generateParticipantContent(
+  room: DiscussionRoom,
+  role: DiscussionRole,
+  options: ParticipantGenerationOptions = {},
+): Promise<ParticipantReply> {
   if (role.provider.type === "mock") {
-    return buildMockParticipantReply(room, role);
+    return applyForcedReplyConstraints(room, buildMockParticipantReply(room, role, options), options.forcedReply);
   }
 
-  const prompt = buildParticipantPromptPayload(room, role);
+  const prompt = buildParticipantPromptPayload(room, role, options);
 
   if (role.provider.type === "custom-http") {
     const result = await requestCustomHttp(room, role, prompt);
-    const parsed = parseParticipantReply(result.content, room);
+    const parsed = parseParticipantReply(result.content, room, role);
     if (parsed) {
-      return parsed;
+      return applyForcedReplyConstraints(room, parsed, options.forcedReply);
     }
 
     const replyMeta = toReplyMetadata(room, result.replyToMessageId ?? null);
-    return {
-      ...replyMeta,
-      content: trimText(result.content),
-    };
+    return applyForcedReplyConstraints(
+      room,
+      {
+        ...replyMeta,
+        content: trimText(result.content),
+        forceReplyRoleId: normalizeForceReplyTarget(room, role, result.forceReplyRoleId),
+      },
+      options.forcedReply,
+    );
   }
 
   const raw =
@@ -651,7 +944,7 @@ export async function generateParticipantContent(room: DiscussionRoom, role: Dis
       ? await requestOpenAICompatible(role, prompt)
       : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
-  return finalizeParticipantReply(raw, room);
+  return applyForcedReplyConstraints(room, finalizeParticipantReply(raw, room, role), options.forcedReply);
 }
 
 export async function generateRecorderCheckpoint(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
@@ -684,4 +977,24 @@ export async function generateRecorderFinal(room: DiscussionRoom, role: Discussi
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
   return trimText(raw, 480);
+}
+
+export async function generateRecorderTopic(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
+  const prompt: TextPromptPayload = {
+    system: buildRecorderTopicSystemPrompt(room, role),
+    user: buildRecorderTopicUserPrompt(room),
+  };
+
+  if (role.provider.type === "mock") {
+    throw new Error("Recorder provider is unavailable for AI topic generation.");
+  }
+
+  const raw =
+    role.provider.type === "custom-http"
+      ? (await requestCustomHttp(room, role, prompt)).content
+      : role.provider.type === "openai-compatible"
+        ? await requestOpenAICompatible(role, prompt)
+        : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
+
+  return trimText(raw, 200);
 }

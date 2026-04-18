@@ -12,9 +12,24 @@ import {
   PROVIDER_TYPE_ORDER,
   RESEARCH_DIRECTION_ORDER,
 } from "./catalog";
-import { formatTemplate, getProviderTypeLabel, getStatusLabel, getText, STORAGE_KEYS, UI_COPY } from "./i18n";
+import {
+  formatTemplate,
+  getBuiltInPresetDescription,
+  getBuiltInPresetName,
+  getDocumentKindLabel,
+  getExchangeReasonLabel,
+  getProviderTypeLabel,
+  getStatusLabel,
+  getText,
+  localizeDocumentWarning,
+  localizeKnownError,
+  STORAGE_KEYS,
+  UI_COPY,
+} from "./i18n";
 import {
   ChatMessage,
+  DocumentOutlineNode,
+  DocumentSegment,
   DiscussionLanguage,
   DiscussionRole,
   DiscussionRoleKind,
@@ -87,6 +102,13 @@ function formatNumberDraft(value: number, step?: number): string {
 
 function sanitizeFileName(input: string): string {
   return input.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").slice(0, 80);
+}
+
+function sortPresetsForDisplay(left: ProviderPreset, right: ProviderPreset): number {
+  if (left.builtIn !== right.builtIn) {
+    return left.builtIn ? -1 : 1;
+  }
+  return left.name.localeCompare(right.name);
 }
 
 function downloadTextFile(fileName: string, content: string, mimeType: string): void {
@@ -178,6 +200,7 @@ function App() {
   const autoRunBusyRef = useRef(false);
   const chatStreamRef = useRef<HTMLDivElement | null>(null);
   const lastHydratedRoomIdRef = useRef<string | null>(null);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedRoom = useMemo(
     () => rooms.find((room) => room.id === selectedRoomId) ?? null,
@@ -210,6 +233,19 @@ function App() {
   const allResearchDirections = useMemo(
     () => [...builtInResearchDirections, ...customResearchDirections],
     [builtInResearchDirections, customResearchDirections],
+  );
+
+  const presetGroups = useMemo(
+    () =>
+      PROVIDER_TYPE_ORDER.map((providerType) => ({
+        providerType,
+        label: getProviderTypeLabel(locale, providerType),
+        presets: presets
+          .filter((preset) => preset.provider.type === providerType)
+          .slice()
+          .sort(sortPresetsForDisplay),
+      })).filter((group) => group.presets.length > 0),
+    [locale, presets],
   );
 
   const selectedCustomResearchDirection = useMemo(
@@ -246,13 +282,96 @@ function App() {
   );
 
   const activeRoles = useMemo(() => draftRoom?.roles.filter((role) => role.enabled) ?? [], [draftRoom]);
+  const recorderRole = useMemo(
+    () => draftRoom?.roles.find((role) => role.enabled && role.kind === "recorder") ?? null,
+    [draftRoom],
+  );
   const canIntervene = draftRoom?.state.status === "running";
   const pendingReplyMessage = useMemo(
     () => draftRoom?.messages.find((message) => message.id === pendingReplyToMessageId) ?? null,
     [draftRoom, pendingReplyToMessageId],
   );
+  const selectedDocumentSegments = useMemo(
+    () =>
+      draftRoom
+        ? draftRoom.documentSegments.filter((segment) => draftRoom.selectedDocumentSegmentIds.includes(segment.id))
+        : [],
+    [draftRoom],
+  );
+  const documentSupportsWholeMode = useMemo(
+    () => draftRoom?.documentSegments.some((segment) => segment.kind === "document") ?? false,
+    [draftRoom],
+  );
+  const canStartDocumentDiscussion = useMemo(() => {
+    if (!draftRoom?.documentAsset) {
+      return true;
+    }
+    if (draftRoom.documentParseStatus === "processing" || draftRoom.documentParseStatus === "failed") {
+      return false;
+    }
+    return draftRoom.selectedDocumentSegmentIds.length > 0;
+  }, [draftRoom]);
+  const canGenerateRecorderDocumentTopic = useMemo(
+    () => Boolean(draftRoom?.documentAsset && recorderRole && recorderRole.provider.type !== "mock"),
+    [draftRoom, recorderRole],
+  );
+  const exchangeRespondedNames = useMemo(
+    () =>
+      draftRoom?.state.activeExchange?.respondedRoleIds
+        .map((roleId) => draftRoom.roles.find((role) => role.id === roleId)?.name)
+        .filter((name): name is string => Boolean(name)) ?? [],
+    [draftRoom],
+  );
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
+
+  function getDisplayErrorMessage(message: string): string {
+    return localizeKnownError(locale, message);
+  }
+
+  function getPresetDisplayName(preset: ProviderPreset): string {
+    return preset.builtIn ? getBuiltInPresetName(locale, preset.provider.type) : preset.name;
+  }
+
+  function getPresetDisplayDescription(preset: ProviderPreset): string {
+    return preset.builtIn ? getBuiltInPresetDescription(locale, preset.provider.type) : preset.description;
+  }
+
+  function getMessageMetaText(message: ChatMessage): string {
+    return formatTemplate(locale, t(UI_COPY.messageMeta), {
+      round: String(message.round),
+      turn: String(message.turn),
+      time: formatWhen(message.createdAt, locale),
+    });
+  }
+
+  function getInsightMetaText(insight: InsightEntry): string {
+    return formatTemplate(locale, t(UI_COPY.insightMeta), {
+      round: String(insight.round),
+      time: formatWhen(insight.createdAt, locale),
+    });
+  }
+
+  function getDisplayMessageRoleName(message: Pick<ChatMessage, "kind" | "roleName">): string {
+    if (message.kind === "user") {
+      return locale === "zh-CN" ? "你" : "You";
+    }
+    return message.roleName;
+  }
+
+  function getInsightDisplayTitle(insight: InsightEntry): string {
+    if (insight.kind === "final") {
+      return t(UI_COPY.noteHeadingFinal);
+    }
+    return formatTemplate(locale, t(UI_COPY.noteHeadingCheckpoint), { index: String(insight.round) });
+  }
+
+  function getRequiredReplyText(message: ChatMessage): string | null {
+    if (!message.requiredReplyRoleName) {
+      return null;
+    }
+    return formatTemplate(locale, t(UI_COPY.requiredReplyLabel), { name: message.requiredReplyRoleName });
+  }
 
   function getDirectionLabelForRoom(room: DiscussionRoom): string {
     return isBuiltInResearchDirection(room.researchDirectionKey)
@@ -264,6 +383,57 @@ function App() {
     return isBuiltInResearchDirection(room.researchDirectionKey)
       ? getResearchDirectionDescription(room.researchDirectionKey, locale)
       : room.researchDirectionDescription;
+  }
+
+  function getDocumentStatusLabel(room: DiscussionRoom): string {
+    switch (room.documentParseStatus) {
+      case "processing":
+        return t(UI_COPY.documentStatusProcessing);
+      case "ready":
+        return t(UI_COPY.documentStatusReady);
+      case "partial":
+        return t(UI_COPY.documentStatusPartial);
+      case "failed":
+        return t(UI_COPY.documentStatusFailed);
+      default:
+        return t(UI_COPY.documentStatusIdle);
+    }
+  }
+
+  function getDocumentModeLabel(mode: DiscussionRoom["documentDiscussionMode"]): string {
+    return mode === "whole-document" ? t(UI_COPY.documentModeWhole) : t(UI_COPY.documentModeSelected);
+  }
+
+  function getDocumentSegmentLabel(segment: DocumentSegment): string {
+    if (segment.kind === "document") {
+      return t(UI_COPY.documentModeWhole);
+    }
+    return segment.path.length > 0 ? segment.path[segment.path.length - 1] : segment.title;
+  }
+
+  function getDocumentFocusSummary(room: DiscussionRoom): string {
+    if (!room.documentAsset) {
+      return t(UI_COPY.documentNoAsset);
+    }
+    if (room.documentDiscussionMode === "whole-document") {
+      return t(UI_COPY.documentWholeActive);
+    }
+    if (selectedDocumentSegments.length === 0) {
+      return t(UI_COPY.documentFocusMissing);
+    }
+    return selectedDocumentSegments.map((segment) => getDocumentSegmentLabel(segment)).join(" / ");
+  }
+
+  function getDocumentWarningText(warning: string): string {
+    return localizeDocumentWarning(locale, warning);
+  }
+
+  function getExchangeHardTargetName(room: DiscussionRoom): string | null {
+    const hardTargetRoleId = room.state.activeExchange?.hardTargetRoleId;
+    if (!hardTargetRoleId) {
+      return null;
+    }
+    return room.roles.find((role) => role.id === hardTargetRoleId)?.name ?? null;
   }
 
   useEffect(() => {
@@ -392,7 +562,7 @@ function App() {
         setSelectedRoomId(nextRooms[0].id);
       }
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to load data.");
+      setError(getDisplayErrorMessage(nextError instanceof Error ? nextError.message : t(UI_COPY.loadFailed)));
     } finally {
       setLoading(false);
     }
@@ -466,7 +636,7 @@ function App() {
     try {
       await task();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Operation failed.");
+      setError(getDisplayErrorMessage(nextError instanceof Error ? nextError.message : t(UI_COPY.operationFailed)));
     } finally {
       setBusyLabel("");
     }
@@ -495,7 +665,7 @@ function App() {
       syncRoom(stepped);
     } catch (nextError) {
       setAutoRunning(false);
-      setError(nextError instanceof Error ? nextError.message : "Auto play failed.");
+      setError(getDisplayErrorMessage(nextError instanceof Error ? nextError.message : t(UI_COPY.autoPlayFailed)));
     } finally {
       autoRunBusyRef.current = false;
     }
@@ -749,6 +919,107 @@ function App() {
       syncRoom(room);
       setUserMessageDraft("");
       setPendingReplyToMessageId(null);
+
+      if (room.state.pendingRequiredReplies.length > 0) {
+        const stepped = await api.stepRoom(room.id);
+        syncRoom(stepped);
+      }
+    });
+  }
+
+  function openDocumentPicker(): void {
+    documentInputRef.current?.click();
+  }
+
+  async function handleDocumentFileSelected(file: File | null): Promise<void> {
+    if (!file || !draftRoom) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.uploadDocument), async () => {
+      const saved = await persistDraft();
+      const room = await api.uploadRoomDocument(saved.id, file);
+      syncRoom(room);
+    });
+
+    if (documentInputRef.current) {
+      documentInputRef.current.value = "";
+    }
+  }
+
+  async function handleRemoveDocument(): Promise<void> {
+    if (!draftRoom?.documentAsset) {
+      return;
+    }
+
+    if (!window.confirm(formatTemplate(locale, t(UI_COPY.documentDeleteConfirm), { name: draftRoom.documentAsset.fileName }))) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.removeDocument), async () => {
+      const room = await api.deleteRoomDocument(draftRoom.id);
+      syncRoom(room);
+    });
+  }
+
+  async function handleUseDefaultDocumentTopic(): Promise<void> {
+    if (!draftRoom?.documentAsset) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.documentGenerateDefaultTopic), async () => {
+      const room = await api.generateDefaultDocumentTopic(draftRoom.id);
+      syncRoom(room);
+    });
+  }
+
+  async function handleGenerateRecorderDocumentTopic(): Promise<void> {
+    if (!draftRoom?.documentAsset || !canGenerateRecorderDocumentTopic) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.topicDocumentRecorder), async () => {
+      const room = await api.generateRecorderDocumentTopic(draftRoom.id);
+      syncRoom(room);
+    });
+  }
+
+  async function handleDocumentModeChange(nextMode: DiscussionRoom["documentDiscussionMode"]): Promise<void> {
+    if (!draftRoom?.documentAsset) {
+      return;
+    }
+
+    await runTask(t(UI_COPY.documentModeLabel), async () => {
+      const selectedSegmentIds =
+        nextMode === "whole-document"
+          ? [draftRoom.documentSegments.find((segment) => segment.kind === "document")?.id ?? ""].filter(Boolean)
+          : draftRoom.selectedDocumentSegmentIds.filter((segmentId) => segmentId !== "document-whole");
+      const room = await api.updateRoomDocumentFocus(draftRoom.id, {
+        discussionMode: nextMode,
+        selectedSegmentIds,
+      });
+      syncRoom(room);
+    });
+  }
+
+  async function handleToggleDocumentSegment(segmentId: string): Promise<void> {
+    if (!draftRoom?.documentAsset) {
+      return;
+    }
+
+    const currentlySelected = new Set(draftRoom.selectedDocumentSegmentIds.filter((id) => id !== "document-whole"));
+    if (currentlySelected.has(segmentId)) {
+      currentlySelected.delete(segmentId);
+    } else {
+      currentlySelected.add(segmentId);
+    }
+
+    await runTask(t(UI_COPY.documentModeSelected), async () => {
+      const room = await api.updateRoomDocumentFocus(draftRoom.id, {
+        discussionMode: "selected-segments",
+        selectedSegmentIds: Array.from(currentlySelected),
+      });
+      syncRoom(room);
     });
   }
 
@@ -800,7 +1071,7 @@ function App() {
       return;
     }
 
-    const name = window.prompt(t(UI_COPY.duplicatePresetPrompt), `${selectedPreset.name} Copy`);
+    const name = window.prompt(t(UI_COPY.duplicatePresetPrompt), `${getPresetDisplayName(selectedPreset)}${t(UI_COPY.duplicatePresetSuffix)}`);
     if (!name?.trim()) {
       return;
     }
@@ -844,7 +1115,7 @@ function App() {
   }
 
   async function handleCreateCustomResearchDirection(): Promise<void> {
-    const defaultLabel = locale === "zh-CN" ? "自定义研究方向" : "Custom Research Direction";
+    const defaultLabel = t(UI_COPY.customDirectionDefaultName);
     const label = window.prompt(t(UI_COPY.customDirectionNamePrompt), defaultLabel);
     if (!label?.trim()) {
       return;
@@ -907,33 +1178,38 @@ function App() {
       return "";
     }
 
+    const topicHeading = t(UI_COPY.noteHeadingTopic);
+    const objectiveHeading = t(UI_COPY.noteHeadingObjective);
+    const finalHeading = t(UI_COPY.noteHeadingFinal);
+    const checkpointHeading = (index: number) =>
+      formatTemplate(locale, t(UI_COPY.noteHeadingCheckpoint), { index: String(index) });
     const finalBlock = finalInsight
-      ? `${format === "md" ? "##" : "Final Conclusion"} ${format === "md" ? "Final Conclusion" : ""}\n${finalInsight.content}\n`
+      ? `${format === "md" ? `## ${finalHeading}` : finalHeading}\n${finalInsight.content}\n`
       : "";
     const checkpoints = checkpointInsights
       .slice()
       .reverse()
       .map((insight, index) =>
         format === "md"
-          ? `## Checkpoint ${index + 1}\n${insight.content}\n`
-          : `Checkpoint ${index + 1}\n${insight.content}\n`,
+          ? `## ${checkpointHeading(index + 1)}\n${insight.content}\n`
+          : `${checkpointHeading(index + 1)}\n${insight.content}\n`,
       )
       .join("\n");
 
     if (finalOnly) {
       return format === "md"
-        ? `# ${draftRoom.title}\n\n## Topic\n${draftRoom.topic}\n\n${finalBlock}`.trim()
-        : `${draftRoom.title}\n\nTopic\n${draftRoom.topic}\n\n${finalInsight?.content ?? ""}`.trim();
+        ? `# ${draftRoom.title}\n\n## ${topicHeading}\n${draftRoom.topic}\n\n${finalBlock}`.trim()
+        : `${draftRoom.title}\n\n${topicHeading}\n${draftRoom.topic}\n\n${finalInsight?.content ?? ""}`.trim();
     }
 
     return format === "md"
       ? [
           `# ${draftRoom.title}`,
           "",
-          "## Topic",
+          `## ${topicHeading}`,
           draftRoom.topic,
           "",
-          "## Objective",
+          `## ${objectiveHeading}`,
           draftRoom.objective,
           "",
           finalBlock.trim(),
@@ -944,13 +1220,13 @@ function App() {
       : [
           draftRoom.title,
           "",
-          "Topic",
+          topicHeading,
           draftRoom.topic,
           "",
-          "Objective",
+          objectiveHeading,
           draftRoom.objective,
           "",
-          finalInsight ? `Final Conclusion\n${finalInsight.content}` : "",
+          finalInsight ? `${finalHeading}\n${finalInsight.content}` : "",
           checkpoints.trim(),
         ]
           .filter(Boolean)
@@ -1111,9 +1387,7 @@ function App() {
         )}
 
         {provider.type === "mock" && mode === "preset" ? (
-          <p className="field-note full-span">
-            Mock provider is useful for offline demos, layout checks, and prompt iteration without calling a real model.
-          </p>
+          <p className="field-note full-span">{t(UI_COPY.mockProviderHint)}</p>
         ) : null}
       </div>
     );
@@ -1124,15 +1398,60 @@ function App() {
       return null;
     }
 
+    const replyTarget = draftRoom?.messages.find((candidate) => candidate.id === message.replyToMessageId) ?? null;
+    const replyTargetName = replyTarget ? getDisplayMessageRoleName(replyTarget) : message.replyToRoleName ?? t(UI_COPY.replyPreviewFallback);
+
     return (
       <button
         type="button"
         className="reply-preview"
         onClick={() => scrollToMessage(message.replyToMessageId!)}
       >
-        <strong>{message.replyToRoleName ?? "Earlier message"}</strong>
+        <strong>{replyTargetName}</strong>
         <span>{message.replyToExcerpt}</span>
       </button>
+    );
+  }
+
+  function renderRequiredReplyNotice(message: ChatMessage) {
+    const requiredReplyText = getRequiredReplyText(message);
+    if (!requiredReplyText) {
+      return null;
+    }
+
+    return (
+      <div className="required-reply-chip">
+        <strong>{t(UI_COPY.requiredReplyBadge)}</strong>
+        <span>{requiredReplyText}</span>
+      </div>
+    );
+  }
+
+  function renderDocumentOutlineNode(node: DocumentOutlineNode, depth = 0) {
+    if (!draftRoom) {
+      return null;
+    }
+
+    const segment = draftRoom.documentSegments.find((item) => item.id === node.segmentId);
+    if (!segment || segment.kind === "document") {
+      return null;
+    }
+
+    const selected = draftRoom.selectedDocumentSegmentIds.includes(segment.id);
+    return (
+      <div key={node.id} className="document-outline-node" style={{ paddingLeft: `${depth * 14}px` }}>
+        <button
+          type="button"
+          className={`entity-chip document-segment-chip ${selected ? "selected" : ""}`}
+          onClick={() => void handleToggleDocumentSegment(segment.id)}
+        >
+          <span>{getDocumentSegmentLabel(segment)}</span>
+          <small>
+            {segment.pageStart ? `P${segment.pageStart}${segment.pageEnd && segment.pageEnd > segment.pageStart ? `-${segment.pageEnd}` : ""}` : ""}
+          </small>
+        </button>
+        {node.children.length > 0 ? node.children.map((child) => renderDocumentOutlineNode(child, depth + 1)) : null}
+      </div>
     );
   }
 
@@ -1155,12 +1474,8 @@ function App() {
         <div className="insight-card-header">
           <div>
             <span className="insight-meta">{badge}</span>
-            <h4>{insight.title}</h4>
-            <p className="muted small-text">
-              {locale === "zh-CN"
-                ? `第 ${insight.round} 轮 · ${formatWhen(insight.createdAt, locale)}`
-                : `Round ${insight.round} · ${formatWhen(insight.createdAt, locale)}`}
-            </p>
+            <h4>{getInsightDisplayTitle(insight)}</h4>
+            <p className="muted small-text">{getInsightMetaText(insight)}</p>
           </div>
           <button
             className={`save-chip ${insight.saved ? "saved" : ""}`}
@@ -1201,6 +1516,17 @@ function App() {
     <div
       className={`app-shell ${studioOpen ? "" : "studio-hidden"} ${roomRailCollapsed ? "room-rail-collapsed" : ""}`}
     >
+      <input
+        ref={documentInputRef}
+        type="file"
+        accept=".pdf,.docx,.txt,.md,.markdown"
+        className="hidden-file-input"
+        data-testid="document-upload-input"
+        onChange={(event) => {
+          const file = event.target.files?.[0] ?? null;
+          void handleDocumentFileSelected(file);
+        }}
+      />
       <aside className={`left-rail ${roomRailCollapsed ? "collapsed" : ""}`}>
         <div className="rail-top">
           <button
@@ -1317,6 +1643,22 @@ function App() {
           </article>
         </section>
 
+        {draftRoom.documentAsset ? (
+          <section className="document-focus-panel">
+            <div className="panel-header tight">
+              <div>
+                <p className="eyebrow">{t(UI_COPY.documentSourceTitle)}</p>
+                <h3>{draftRoom.documentAsset.title}</h3>
+                <p className="helper-text">{getDocumentFocusSummary(draftRoom)}</p>
+              </div>
+              <div className="inline-actions">
+                <span className="busy-chip">{getDocumentModeLabel(draftRoom.documentDiscussionMode)}</span>
+                <span className="busy-chip">{getDocumentStatusLabel(draftRoom)}</span>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         <section className="role-strip">
           {activeRoles.map((role) => (
             <article key={role.id} className={`role-pill ${role.id === selectedRoleId ? "selected" : ""}`}>
@@ -1355,7 +1697,7 @@ function App() {
                     className="ghost-button"
                     data-testid="start-fresh-button"
                     onClick={() => void handleStartFresh()}
-                    disabled={Boolean(busyLabel)}
+                    disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
                   >
                     {t(UI_COPY.startFresh)}
                   </button>
@@ -1363,7 +1705,7 @@ function App() {
                     className="ghost-button"
                     data-testid="step-button"
                     onClick={() => void handleStep()}
-                    disabled={Boolean(busyLabel)}
+                    disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
                   >
                     {t(UI_COPY.step)}
                   </button>
@@ -1371,7 +1713,7 @@ function App() {
                     className="primary-button"
                     data-testid="run-all-button"
                     onClick={handleRun}
-                    disabled={Boolean(busyLabel) || autoRunBusyRef.current}
+                    disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
                   >
                     {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
                   </button>
@@ -1407,6 +1749,21 @@ function App() {
 
               {busyLabel ? <div className="busy-chip">{busyLabel}</div> : null}
               {autoRunning ? <div className="busy-chip auto-play-chip">{t(UI_COPY.autoPlayRunning)}</div> : null}
+              {draftRoom.state.activeExchange ? (
+                <div className="exchange-status-card">
+                  <strong>{t(UI_COPY.exchangeStatusTitle)}</strong>
+                  <span>
+                    {t(UI_COPY.exchangeReasonLabel)}: {getExchangeReasonLabel(locale, draftRoom.state.activeExchange.reason)}
+                  </span>
+                  <span>
+                    {t(UI_COPY.exchangeHardTargetLabel)}: {getExchangeHardTargetName(draftRoom) ?? "-"}
+                  </span>
+                  <span>
+                    {t(UI_COPY.exchangeRespondedLabel)}: {exchangeRespondedNames.length > 0 ? exchangeRespondedNames.join(", ") : "-"}
+                  </span>
+                  <span>{t(UI_COPY.exchangeOpenLabel)}</span>
+                </div>
+              ) : null}
 
               <div className="chat-stream" ref={chatStreamRef}>
                 {draftRoom.messages.length > 0 ? (
@@ -1416,10 +1773,7 @@ function App() {
                       message.kind === "user"
                         ? "#8c5d14"
                         : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
-                    const messageMeta =
-                      locale === "zh-CN"
-                        ? `第 ${message.round} 轮 · 第 ${message.turn} 条 · ${formatWhen(message.createdAt, locale)}`
-                        : `Round ${message.round} · Turn ${message.turn} · ${formatWhen(message.createdAt, locale)}`;
+                    const messageMeta = getMessageMetaText(message);
 
                     return (
                       <article
@@ -1430,15 +1784,11 @@ function App() {
                         data-message-id={message.id}
                       >
                         <div className="avatar" style={{ backgroundColor: accent }}>
-                          {message.kind === "user"
-                            ? locale === "zh-CN"
-                              ? "你"
-                              : "You"
-                            : message.roleName.slice(0, 1).toUpperCase()}
+                          {message.kind === "user" ? getDisplayMessageRoleName(message) : message.roleName.slice(0, 1).toUpperCase()}
                         </div>
                         <div className="bubble-wrap">
                           <div className="message-meta">
-                            <strong>{message.roleName}</strong>
+                            <strong>{getDisplayMessageRoleName(message)}</strong>
                             <span>{messageMeta}</span>
                             <button
                               type="button"
@@ -1451,6 +1801,7 @@ function App() {
                           </div>
                           <div className="message-bubble">
                             {renderReplyPreview(message)}
+                            {renderRequiredReplyNotice(message)}
                             {message.content}
                           </div>
                         </div>
@@ -1476,8 +1827,13 @@ function App() {
                 {pendingReplyMessage ? (
                   <div className="composer-reply-card" data-testid="composer-reply-card">
                     <div>
-                      <strong>{t(UI_COPY.replyingTo)} {pendingReplyMessage.roleName}</strong>
+                      <strong>{t(UI_COPY.replyingTo)} {getDisplayMessageRoleName(pendingReplyMessage)}</strong>
                       <p>{truncateText(pendingReplyMessage.content, 120)}</p>
+                      <p className="helper-text">
+                        {pendingReplyMessage.kind === "participant"
+                          ? formatTemplate(locale, t(UI_COPY.replyingToRoleImmediate), { name: getDisplayMessageRoleName(pendingReplyMessage) })
+                          : t(UI_COPY.replyingToGeneric)}
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -1497,22 +1853,50 @@ function App() {
                   placeholder={t(UI_COPY.userInterventionPlaceholder)}
                   disabled={!canIntervene}
                 />
-                <div className="inline-actions">
-                  <button
-                    className="primary-button"
-                    data-testid="user-message-send"
-                    onClick={() => void handleSendUserMessage()}
-                    disabled={!draftRoom || !canIntervene || !userMessageDraft.trim() || Boolean(busyLabel)}
-                  >
-                    {t(UI_COPY.sendToDiscussion)}
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={() => setUserMessageDraft("")}
-                    disabled={!userMessageDraft || Boolean(busyLabel)}
-                  >
-                    {t(UI_COPY.clear)}
-                  </button>
+                <div className="composer-action-bar">
+                  <div className="inline-actions">
+                    <button
+                      className="ghost-button"
+                      data-testid="composer-step-button"
+                      onClick={() => void handleStep()}
+                      disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
+                    >
+                      {t(UI_COPY.composerStep)}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      data-testid="composer-auto-play-button"
+                      onClick={handleRun}
+                      disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
+                    >
+                      {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
+                    </button>
+                    <button
+                      className="danger-button subtle"
+                      data-testid="composer-stop-button"
+                      onClick={() => void handleStop()}
+                      disabled={Boolean(busyLabel)}
+                    >
+                      {t(UI_COPY.stop)}
+                    </button>
+                  </div>
+                  <div className="inline-actions">
+                    <button
+                      className="primary-button"
+                      data-testid="user-message-send"
+                      onClick={() => void handleSendUserMessage()}
+                      disabled={!draftRoom || !canIntervene || !userMessageDraft.trim() || Boolean(busyLabel)}
+                    >
+                      {t(UI_COPY.sendToDiscussion)}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setUserMessageDraft("")}
+                      disabled={!userMessageDraft || Boolean(busyLabel)}
+                    >
+                      {t(UI_COPY.clear)}
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1634,6 +2018,113 @@ function App() {
                     onChange={(event) => updateRoomField("topic", event.target.value)}
                   />
                 </label>
+                <div className="full-span document-source-panel">
+                  <div className="panel-header tight">
+                    <div>
+                      <h4>{t(UI_COPY.documentSourceTitle)}</h4>
+                      <p className="muted">{t(UI_COPY.documentSourceHint)}</p>
+                    </div>
+                    <div className="inline-actions">
+                      <button className="ghost-button" type="button" onClick={openDocumentPicker}>
+                        {draftRoom.documentAsset ? t(UI_COPY.replaceDocument) : t(UI_COPY.uploadDocument)}
+                      </button>
+                      {draftRoom.documentAsset ? (
+                        <button className="danger-button subtle" type="button" onClick={() => void handleRemoveDocument()}>
+                          {t(UI_COPY.removeDocument)}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {draftRoom.documentAsset ? (
+                    <>
+                      <div className="document-asset-card">
+                        <div className="document-asset-meta">
+                          <strong>{draftRoom.documentAsset.fileName}</strong>
+                          <span>{getDocumentKindLabel(locale, draftRoom.documentAsset.fileKind)}</span>
+                          <span>{t(UI_COPY.documentStatusLabel)}: {getDocumentStatusLabel(draftRoom)}</span>
+                          <span>{t(UI_COPY.documentModeLabel)}: {getDocumentModeLabel(draftRoom.documentDiscussionMode)}</span>
+                          <span>{t(UI_COPY.documentPageCountLabel)}: {draftRoom.documentAsset.pageCount ?? "-"}</span>
+                          <span>{t(UI_COPY.documentCharCountLabel)}: {draftRoom.documentAsset.charCount}</span>
+                        </div>
+                        <div className="inline-actions">
+                          <button className="ghost-button" type="button" onClick={() => void handleUseDefaultDocumentTopic()}>
+                            {t(UI_COPY.documentGenerateDefaultTopic)}
+                          </button>
+                          <button
+                            className="ghost-button"
+                            type="button"
+                            onClick={() => void handleGenerateRecorderDocumentTopic()}
+                            disabled={!canGenerateRecorderDocumentTopic}
+                            title={!canGenerateRecorderDocumentTopic ? t(UI_COPY.documentGenerateRecorderDisabled) : undefined}
+                          >
+                            {t(UI_COPY.topicDocumentRecorder)}
+                          </button>
+                        </div>
+                      </div>
+
+                      {draftRoom.documentWarnings.length > 0 ? (
+                        <div className="document-warning-list">
+                          <strong>{t(UI_COPY.documentWarningsTitle)}</strong>
+                          {draftRoom.documentWarnings.map((warning) => (
+                            <p key={warning} className="helper-text">
+                              {getDocumentWarningText(warning)}
+                            </p>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      <div className="inline-actions top-gap">
+                        {documentSupportsWholeMode ? (
+                          <button
+                            className={draftRoom.documentDiscussionMode === "whole-document" ? "primary-button" : "ghost-button"}
+                            type="button"
+                            onClick={() => void handleDocumentModeChange("whole-document")}
+                          >
+                            {t(UI_COPY.documentModeWhole)}
+                          </button>
+                        ) : null}
+                        <button
+                          className={draftRoom.documentDiscussionMode === "selected-segments" ? "primary-button" : "ghost-button"}
+                          type="button"
+                          onClick={() => void handleDocumentModeChange("selected-segments")}
+                        >
+                          {t(UI_COPY.documentModeSelected)}
+                        </button>
+                      </div>
+
+                      {draftRoom.documentDiscussionMode === "selected-segments" ? (
+                        <div className="top-gap">
+                          <div className="panel-header tight">
+                            <div>
+                              <h4>{t(UI_COPY.documentOutlineTitle)}</h4>
+                              <p className="muted">
+                                {selectedDocumentSegments.length > 0
+                                  ? formatTemplate(locale, t(UI_COPY.documentSelectedCount), { count: String(selectedDocumentSegments.length) })
+                                  : t(UI_COPY.documentFocusMissing)}
+                              </p>
+                            </div>
+                          </div>
+                          {draftRoom.documentOutline.length > 0 ? (
+                            <div className="document-outline-tree">
+                              {draftRoom.documentOutline.map((node) => renderDocumentOutlineNode(node))}
+                            </div>
+                          ) : (
+                            <p className="muted small-text">{t(UI_COPY.documentOutlineEmpty)}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="muted small-text top-gap">{t(UI_COPY.documentWholeActive)}</p>
+                      )}
+
+                      {!canGenerateRecorderDocumentTopic ? (
+                        <p className="muted small-text top-gap">{t(UI_COPY.documentGenerateRecorderDisabled)}</p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="muted small-text">{t(UI_COPY.documentNoAsset)}</p>
+                  )}
+                </div>
                 <label className="full-span">
                   {t(UI_COPY.objectiveLabel)}
                   <textarea
@@ -1862,7 +2353,7 @@ function App() {
                         <option value="">{t(UI_COPY.noPreset)}</option>
                         {presets.map((preset) => (
                           <option key={preset.id} value={preset.id}>
-                            {preset.name}
+                            {getPresetDisplayName(preset)}
                           </option>
                         ))}
                       </select>
@@ -1966,16 +2457,25 @@ function App() {
                 </div>
               </div>
 
-              <div className="entity-list">
-                {presets.map((preset) => (
-                  <button
-                    key={preset.id}
-                    className={`entity-chip ${preset.id === selectedPresetId ? "selected" : ""}`}
-                    onClick={() => setSelectedPresetId(preset.id)}
-                  >
-                    <span>{preset.name}</span>
-                    <small>{preset.builtIn ? t(UI_COPY.presetBuiltIn) : t(UI_COPY.presetCustom)}</small>
-                  </button>
+              <div className="preset-group-list">
+                {presetGroups.map((group) => (
+                  <section key={group.providerType} className="preset-group">
+                    <div className="preset-group-header">
+                      <h4>{group.label}</h4>
+                    </div>
+                    <div className="entity-list compact-entity-list">
+                      {group.presets.map((preset) => (
+                        <button
+                          key={preset.id}
+                          className={`entity-chip ${preset.id === selectedPresetId ? "selected" : ""}`}
+                          onClick={() => setSelectedPresetId(preset.id)}
+                        >
+                          <span>{getPresetDisplayName(preset)}</span>
+                          <small>{preset.builtIn ? t(UI_COPY.presetBuiltIn) : t(UI_COPY.presetCustom)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
 
@@ -1983,7 +2483,7 @@ function App() {
                 <div className="editor-card">
                   <div className="panel-header tight">
                     <div>
-                      <h4>{selectedPreset.name}</h4>
+                      <h4>{getPresetDisplayName(selectedPreset)}</h4>
                       <p className="muted">
                         {selectedPreset.builtIn ? t(UI_COPY.builtInPresetHint) : t(UI_COPY.customPresetHint)}
                       </p>
@@ -2004,7 +2504,7 @@ function App() {
                     <label>
                       {t(UI_COPY.presetNameLabel)}
                       <input
-                        value={selectedPreset.name}
+                        value={selectedPreset.builtIn ? getPresetDisplayName(selectedPreset) : selectedPreset.name}
                         onChange={(event) => updatePreset((preset) => ({ ...preset, name: event.target.value }))}
                         disabled={selectedPreset.builtIn}
                       />
@@ -2013,7 +2513,7 @@ function App() {
                       {t(UI_COPY.descriptionLabel)}
                       <textarea
                         rows={2}
-                        value={selectedPreset.description}
+                        value={selectedPreset.builtIn ? getPresetDisplayDescription(selectedPreset) : selectedPreset.description}
                         onChange={(event) =>
                           updatePreset((preset) => ({
                             ...preset,
@@ -2081,7 +2581,7 @@ function App() {
             <div className="guide-section">
               <h4>{t(UI_COPY.guideCustomTitle)}</h4>
               <p>{t(UI_COPY.guideCustomBody)}</p>
-              <code className="guide-code">POST http://127.0.0.1:8000/chat -&gt; &#123; "content": "...", "replyToMessageId": null &#125;</code>
+              <code className="guide-code">POST http://127.0.0.1:8000/chat -&gt; &#123; "content": "...", "replyToMessageId": null, "forceReplyRoleId": null &#125;</code>
             </div>
             <div className="guide-section">
               <h4>{t(UI_COPY.guideCodexTitle)}</h4>
@@ -2091,9 +2591,7 @@ function App() {
             <div className="guide-section">
               <h4>{t(UI_COPY.guideLocalAgentTitle)}</h4>
               <p>{t(UI_COPY.guideLocalAgentBody)}</p>
-              <pre className="guide-flow">
-{"Chat role -> backend provider adapter ->\nCustom HTTP bridge or Codex CLI -> local agent / model"}
-              </pre>
+              <pre className="guide-flow">{t(UI_COPY.guideFlowText)}</pre>
             </div>
           </section>
         </div>
