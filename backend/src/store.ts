@@ -9,7 +9,7 @@ import {
   normalizePreset,
   normalizeRole,
 } from "./defaults";
-import { DiscussionRoom, DiscussionSummary, InsightEntry, ProviderPreset } from "./types";
+import { ChatMessage, DiscussionRoom, DiscussionSummary, InsightEntry, ProviderPreset } from "./types";
 
 const dataDir = path.resolve(__dirname, "../../data");
 const roomsFile = path.join(dataDir, "rooms.json");
@@ -35,6 +35,22 @@ function normalizeInsight(input: Partial<InsightEntry>, fallbackKind: InsightEnt
         ? input.round
         : fallbackRound,
     saved: Boolean(input.saved),
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeMessage(input: Partial<ChatMessage>, fallbackTurn: number): ChatMessage {
+  return {
+    id: input.id ?? randomUUID(),
+    roleId: input.roleId ?? "system",
+    roleName: input.roleName?.trim() || "Unknown",
+    kind: input.kind ?? "system",
+    content: input.content?.trim() || "",
+    replyToMessageId: input.replyToMessageId ?? null,
+    replyToRoleName: input.replyToRoleName?.trim() ?? null,
+    replyToExcerpt: input.replyToExcerpt?.trim() ?? null,
+    round: typeof input.round === "number" && Number.isFinite(input.round) ? input.round : 0,
+    turn: typeof input.turn === "number" && Number.isFinite(input.turn) ? input.turn : fallbackTurn,
     createdAt: input.createdAt ?? new Date().toISOString(),
   };
 }
@@ -112,6 +128,13 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
     title: input.title?.trim() || base.title,
     topic: input.topic?.trim() || base.topic,
     objective: input.objective?.trim() || base.objective,
+    discussionLanguage: input.discussionLanguage ?? base.discussionLanguage,
+    researchDirectionKey: input.researchDirectionKey ?? base.researchDirectionKey,
+    researchDirectionNote: input.researchDirectionNote?.trim() ?? base.researchDirectionNote,
+    autoRunDelaySeconds:
+      typeof input.autoRunDelaySeconds === "number" && Number.isFinite(input.autoRunDelaySeconds)
+        ? Math.max(0.2, Math.min(30, input.autoRunDelaySeconds))
+        : base.autoRunDelaySeconds,
     maxRounds:
       typeof input.maxRounds === "number" && Number.isFinite(input.maxRounds)
         ? Math.max(1, Math.min(12, input.maxRounds))
@@ -119,7 +142,7 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
     checkpointEveryRound:
       typeof input.checkpointEveryRound === "boolean" ? input.checkpointEveryRound : base.checkpointEveryRound,
     roles: Array.isArray(input.roles) ? input.roles.map((role) => normalizeRole(role)) : base.roles,
-    messages: Array.isArray(input.messages) ? input.messages : [],
+    messages: Array.isArray(input.messages) ? input.messages.map((message, index) => normalizeMessage(message, index + 1)) : [],
     summary: normalizeSummary(input.summary),
     state: {
       ...base.state,

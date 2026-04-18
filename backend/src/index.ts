@@ -35,6 +35,13 @@ function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>):
     title: incoming.title?.trim() || existing.title,
     topic: incoming.topic?.trim() || existing.topic,
     objective: incoming.objective?.trim() || existing.objective,
+    discussionLanguage: incoming.discussionLanguage ?? existing.discussionLanguage,
+    researchDirectionKey: incoming.researchDirectionKey ?? existing.researchDirectionKey,
+    researchDirectionNote: incoming.researchDirectionNote?.trim() ?? existing.researchDirectionNote,
+    autoRunDelaySeconds:
+      typeof incoming.autoRunDelaySeconds === "number" && Number.isFinite(incoming.autoRunDelaySeconds)
+        ? Math.max(0.2, Math.min(30, incoming.autoRunDelaySeconds))
+        : existing.autoRunDelaySeconds,
     maxRounds:
       typeof incoming.maxRounds === "number" && Number.isFinite(incoming.maxRounds)
         ? Math.max(1, Math.min(12, incoming.maxRounds))
@@ -185,7 +192,8 @@ app.post("/api/rooms/:roomId/messages", async (req, res) => {
 
   try {
     const content = typeof req.body?.content === "string" ? req.body.content : "";
-    addUserMessage(room, content);
+    const replyToMessageId = typeof req.body?.replyToMessageId === "string" ? req.body.replyToMessageId : null;
+    addUserMessage(room, content, replyToMessageId);
     await saveRoom(room);
     res.json(room);
   } catch (error) {

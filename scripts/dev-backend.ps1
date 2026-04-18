@@ -1,3 +1,4 @@
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
-& "D:\nodejs\npm.cmd" run dev:backend
+. (Join-Path $PSScriptRoot "common.ps1")
+Invoke-RepoNpm run dev:backend

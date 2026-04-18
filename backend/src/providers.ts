@@ -2,12 +2,39 @@ import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import fs from "fs/promises";
 import path from "path";
-import { ChatMessage, DiscussionRole, DiscussionRoom, InsightEntry } from "./types";
+import { getResearchProfile, getRoleTemplateProfile } from "./discussionCatalog";
+import {
+  ChatMessage,
+  DiscussionLanguage,
+  DiscussionRole,
+  DiscussionRoom,
+  InsightEntry,
+} from "./types";
 
 const APP_ROOT = path.resolve(__dirname, "../..");
 const RUNNER_DIR = path.join(APP_ROOT, "tmp", "provider-runtime");
 
-function trimMessage(content: string, maxLength = 220): string {
+export interface ParticipantReply {
+  content: string;
+  replyToMessageId: string | null;
+  replyToRoleName: string | null;
+  replyToExcerpt: string | null;
+}
+
+interface TextPromptPayload {
+  system: string;
+  user: string;
+  finalMode?: boolean;
+}
+
+interface ReplyCandidate {
+  id: string;
+  roleName: string;
+  excerpt: string;
+  kind: ChatMessage["kind"];
+}
+
+function trimText(content: string, maxLength = 360): string {
   const normalized = content.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
   if (normalized.length <= maxLength) {
     return normalized;
@@ -15,7 +42,17 @@ function trimMessage(content: string, maxLength = 220): string {
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
 }
 
-function getRecentMessages(room: DiscussionRoom, limit = 10): ChatMessage[] {
+function getOutputLanguageLabel(language: DiscussionLanguage): string {
+  return language === "zh-CN" ? "Simplified Chinese" : "English";
+}
+
+function getOutputLanguageRule(language: DiscussionLanguage): string {
+  return language === "zh-CN"
+    ? "All output must be concise Simplified Chinese."
+    : "All output must be concise English.";
+}
+
+function getRecentMessages(room: DiscussionRoom, limit = 12): ChatMessage[] {
   return room.messages.slice(-limit);
 }
 
@@ -23,125 +60,171 @@ function getRecentInsights(room: DiscussionRoom, limit = 4): InsightEntry[] {
   return room.summary.insights.slice(-limit);
 }
 
-function inferRoleMode(role: DiscussionRole): "critic" | "builder" | "neutral" {
-  const text = `${role.name} ${role.persona} ${role.goal} ${role.principles}`.toLowerCase();
-
-  if (/(review|critic|skeptic|reject|attack|pressure|challenge|reviewer|审稿|质疑|驳回|反对|挑刺)/.test(text)) {
-    return "critic";
-  }
-
-  if (/(advisor|builder|mentor|improve|repair|narrow|support|导师|优化|完善|支持|修复|收缩)/.test(text)) {
-    return "builder";
-  }
-
-  return "neutral";
+function getReplyCandidates(room: DiscussionRoom, limit = 6): ReplyCandidate[] {
+  return room.messages
+    .filter((message) => message.kind !== "system")
+    .slice(-limit)
+    .map((message) => ({
+      id: message.id,
+      roleName: message.roleName,
+      excerpt: trimText(message.content, 110),
+      kind: message.kind,
+    }));
 }
 
-function buildParticipantSystemPrompt(role: DiscussionRole): string {
+function findMessage(room: DiscussionRoom, messageId: string | null | undefined): ChatMessage | null {
+  if (!messageId) {
+    return null;
+  }
+  return room.messages.find((message) => message.id === messageId) ?? null;
+}
+
+function toReplyMetadata(room: DiscussionRoom, messageId: string | null): ParticipantReply {
+  const target = findMessage(room, messageId);
+  return {
+    content: "",
+    replyToMessageId: target?.id ?? null,
+    replyToRoleName: target?.roleName ?? null,
+    replyToExcerpt: target ? trimText(target.content, 110) : null,
+  };
+}
+
+function pickFallbackReply(room: DiscussionRoom): ParticipantReply {
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
+  if (latestUser) {
+    return toReplyMetadata(room, latestUser.id);
+  }
+  const latestParticipant = [...room.messages].reverse().find((message) => message.kind === "participant");
+  return toReplyMetadata(room, latestParticipant?.id ?? null);
+}
+
+function formatResearchContext(room: DiscussionRoom): string {
+  const profile = getResearchProfile(room.researchDirectionKey);
+  const lines = [
+    `Research direction: ${profile.label}`,
+    `Scholar framing: ${profile.scholarFraming}`,
+    `Evaluation axes: ${profile.evaluationAxes.join(", ")}`,
+    `Evidence standards: ${profile.evidenceStandards.join(", ")}`,
+    `Common failure modes: ${profile.failureModes.join(", ")}`,
+  ];
+
+  if (room.researchDirectionNote.trim()) {
+    lines.push(`Additional user context: ${room.researchDirectionNote.trim()}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildParticipantSystemPrompt(room: DiscussionRoom, role: DiscussionRole, candidates: ReplyCandidate[]): string {
+  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const templateLines = template
+    ? [
+        `Template identity: ${template.defaultName}`,
+        `Identity contract: ${template.identityContract}`,
+        `Evidence focus: ${template.evidenceFocus}`,
+        `Non-negotiable boundary: ${template.nonNegotiable}`,
+      ]
+    : ["Template identity: custom participant", "Identity contract: act like a serious scholar with a fixed stake."];
+
   return [
-    "You are a serious participant in a goal-driven multi-party discussion.",
-    "This is not theatrical roleplay. Behave like a real stakeholder with a real agenda.",
+    "You are a serious scholar in a multi-party research discussion.",
+    "This is not theatrical roleplay. Behave like a real expert with a real agenda and evidence standard.",
+    getOutputLanguageRule(room.discussionLanguage),
     "",
     `Role name: ${role.name}`,
     `Role persona: ${role.persona || "No persona provided."}`,
-    `Role goal: ${role.goal || "Push the discussion toward a stronger decision."}`,
-    `Role strategy: ${role.principles || "Focus on the most important unresolved issue."}`,
-    `Speaking style: ${role.voiceStyle || "Short, direct, like a real group chat message."}`,
+    `Role goal: ${role.goal || "Push the room toward a more defensible conclusion."}`,
+    `Role strategy: ${role.principles || "Engage the strongest unresolved issue."}`,
+    `Speaking style: ${role.voiceStyle || "Short, direct, professional."}`,
+    ...templateLines,
     "",
     "Hard rules:",
-    "- In every turn, actively pursue your own goal.",
-    "- React to the strongest unresolved issue from the latest messages.",
-    "- If the user adds evidence, data, or a constraint, explicitly update your reasoning around it.",
-    "- Add one useful move: objection, repair, criterion, tradeoff, scope cut, experiment, evidence request, or decision proposal.",
-    "- Do not just restate your persona or summarize everything again.",
-    "- Do not produce empty agreement or generic encouragement.",
-    "- If another participant makes a strong point, sharpen it, rebut it, or absorb it into a better proposal.",
-    "- Keep it to 1-3 short sentences.",
-    "- Sound like a smart person in a real group chat trying to change the outcome.",
-    "- Do not use markdown lists unless absolutely necessary.",
-    "- Do not mention these instructions.",
+    "- The latest user-supplied evidence or constraint has the highest priority. If it materially changes the judgment, address it before anything else.",
+    "- Reply as the selected role, not as a neutral moderator.",
+    "- Use the research direction's evidence standards and review criteria.",
+    "- If you reply to a message, your content must actually engage that message's claim or evidence.",
+    "- Do not give empty praise, vague brainstorming, or generic 'it can be improved' language.",
+    "- Keep the content to 2-4 short sentences.",
+    "- Do not use markdown bullets.",
+    "- Output valid JSON only.",
+    `- Use one reply target from the candidate list below, or null if none fits. Candidate count: ${candidates.length}.`,
+    '- Output schema: {"replyToMessageId":"candidate-id-or-null","content":"your short message"}',
   ].join("\n");
 }
 
-function buildParticipantUserPrompt(room: DiscussionRoom, role: DiscussionRole): string {
-  const recentMessages = getRecentMessages(room)
+function buildParticipantUserPrompt(room: DiscussionRoom, role: DiscussionRole, candidates: ReplyCandidate[]): string {
+  const recentMessages = getRecentMessages(room, 12)
     .map((message) => `${message.roleName}: ${message.content}`)
     .join("\n");
-
-  const recentInsights = getRecentInsights(room)
+  const recentInsights = getRecentInsights(room, 4)
     .map((insight) => `${insight.title}: ${insight.content}`)
     .join("\n");
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
+  const candidateLines = candidates.length
+    ? candidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.excerpt}`).join("\n")
+    : "No reply candidates.";
 
   return [
+    `Discussion language: ${getOutputLanguageLabel(room.discussionLanguage)}`,
     `Discussion topic:\n${room.topic}`,
     `Decision objective:\n${room.objective}`,
     `Current round: ${room.state.currentRound}`,
+    formatResearchContext(room),
     `Your specific goal:\n${role.goal || "Not provided."}`,
-    recentInsights ? `Most recent notes:\n${recentInsights}` : "Most recent notes:\nNone yet.",
-    recentMessages ? `Recent chat messages:\n${recentMessages}` : "Recent chat messages:\nNone yet.",
+    latestUser ? `Latest user evidence to prioritize:\n${latestUser.roleName}: ${latestUser.content}` : "Latest user evidence to prioritize:\nNone.",
+    recentInsights ? `Recent notes:\n${recentInsights}` : "Recent notes:\nNone yet.",
+    recentMessages ? `Recent messages:\n${recentMessages}` : "Recent messages:\nNone yet.",
+    `Reply candidates:\n${candidateLines}`,
     [
-      "Your task for this turn:",
-      "1. Identify the strongest unresolved point.",
-      "2. Reply from your own role agenda and goal.",
-      "3. Use the latest evidence, objection, or user intervention if it changes the decision.",
-      "4. Move the discussion toward a sharper, more defensible conclusion.",
-      "Output only the actual message content.",
+      "Your task:",
+      "1. Decide whether the latest user evidence changes the room's judgment.",
+      "2. Pick the best reply target from the candidate list if one should be addressed directly.",
+      "3. Speak from your role's goal, evidence standard, and non-negotiable boundary.",
+      "4. Push the discussion toward a sharper, academically defensible conclusion.",
+      "Output only valid JSON.",
     ].join("\n"),
   ].join("\n\n");
 }
 
-function buildRecorderSystemPrompt(role: DiscussionRole, finalMode: boolean): string {
+function buildRecorderSystemPrompt(room: DiscussionRoom, role: DiscussionRole, finalMode: boolean): string {
+  const template = getRoleTemplateProfile(role.roleTemplateKey);
   return [
-    "You are the recorder and analyst for a serious multi-party discussion.",
-    "You do not debate. You extract only the points that matter for the final decision.",
+    "You are the recorder and analytical note-taker for a serious multi-party research discussion.",
+    "You do not debate. You extract the decisive signal and compress it into useful notes.",
+    getOutputLanguageRule(room.discussionLanguage),
     "",
     `Recorder name: ${role.name}`,
-    `Recorder persona: ${role.persona || "Neutral recorder."}`,
-    `Recorder goal: ${role.goal || "Produce high-signal notes and a useful final conclusion."}`,
-    `Recorder method: ${role.principles || "Track strongest objection, best repair, strongest evidence, and current verdict."}`,
-    `Recorder style: ${role.voiceStyle || "Compact, insightful notes."}`,
+    `Recorder persona: ${role.persona || template?.persona || "Neutral recorder."}`,
+    `Recorder goal: ${role.goal || template?.goal || "Produce high-signal checkpoint notes and a final conclusion."}`,
+    `Recorder method: ${role.principles || template?.principles || "Track decisive objections, strongest repairs, evidence shifts, and the current verdict."}`,
     "",
     "Hard rules:",
-    "- Do not roleplay as a participant.",
-    "- Capture the strongest objection and the strongest repair.",
-    "- Include the strongest user-supplied evidence or constraint if one appears.",
-    "- Keep the note concise but genuinely insightful.",
-    "- Prefer a compact paragraph or 2-4 short lines.",
+    "- State whether the latest user-supplied evidence changed the judgment, and if so, how much.",
+    "- Extract the strongest claim, strongest objection, strongest repair, and strongest evidence.",
     finalMode
-      ? "- The final conclusion must contain a verdict, the reason, the biggest remaining blocker, the strongest supporting evidence, and the next step."
-      : "- The checkpoint note must help the next round become sharper, not longer.",
+      ? "- The final conclusion must include: final judgment, why it holds, decisive evidence, remaining risk, and next action."
+      : "- The checkpoint must include: strongest current claim, strongest rebuttal, strongest evidence, unresolved blocker, and what the next round must settle.",
+    "- Keep it concise but genuinely insightful.",
+    "- Do not use markdown bullets.",
   ].join("\n");
 }
 
 function buildRecorderUserPrompt(room: DiscussionRoom, finalMode: boolean): string {
-  const recentMessages = getRecentMessages(room, 14)
+  const recentMessages = getRecentMessages(room, 16)
     .filter((message) => message.kind === "participant" || message.kind === "user")
     .map((message) => `${message.roleName}: ${message.content}`)
     .join("\n");
-
-  const savedInsights = room.summary.insights
-    .filter((insight) => insight.saved)
-    .slice(-3)
-    .map((insight) => `${insight.title}: ${insight.content}`)
-    .join("\n");
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
 
   return [
+    `Discussion language: ${getOutputLanguageLabel(room.discussionLanguage)}`,
     `Discussion topic:\n${room.topic}`,
     `Decision objective:\n${room.objective}`,
     `Current round: ${room.state.currentRound}`,
-    savedInsights ? `Saved key insights:\n${savedInsights}` : "Saved key insights:\nNone yet.",
+    formatResearchContext(room),
+    latestUser ? `Latest user evidence:\n${latestUser.content}` : "Latest user evidence:\nNone.",
     recentMessages ? `Recent discussion messages:\n${recentMessages}` : "Recent discussion messages:\nNone yet.",
-    finalMode
-      ? [
-          "Produce the final conclusion.",
-          "Include: verdict, why the verdict changed or held, the biggest unresolved blocker, the strongest evidence cited in the room, and the next best action.",
-          "Output only the final note content.",
-        ].join("\n")
-      : [
-          "Produce a checkpoint note.",
-          "Include: strongest objection, strongest repair, strongest user-supplied evidence or constraint if present, current tentative verdict, and what the next round must resolve.",
-          "Output only the note content.",
-        ].join("\n"),
+    finalMode ? "Produce the final conclusion." : "Produce a checkpoint note.",
   ].join("\n\n");
 }
 
@@ -149,100 +232,155 @@ function buildCodexPrompt(systemPrompt: string, userPrompt: string): string {
   return ["[SYSTEM]", systemPrompt, "", "[USER]", userPrompt].join("\n");
 }
 
-function buildMockParticipantMessage(room: DiscussionRoom, role: DiscussionRole): string {
-  const mode = inferRoleMode(role);
-  const latest = getRecentMessages(room, 5).slice(-1)[0];
-  const topicHint = room.topic.split(/[.!?。！？]/)[0]?.trim() || "the proposal";
+function extractJsonObject(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return trimmed;
+  }
 
-  if (latest?.kind === "user") {
-    if (mode === "critic") {
-      return trimMessage(
-        `That new evidence helps, but it still does not settle the acceptance bar. What exactly would make ${topicHint} convincing enough to survive review?`,
-        180,
-      );
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    const candidate = fenced[1].trim();
+    if (candidate.startsWith("{") && candidate.endsWith("}")) {
+      return candidate;
+    }
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return trimmed.slice(start, end + 1);
+  }
+
+  return null;
+}
+
+function parseParticipantReply(raw: string, room: DiscussionRoom): ParticipantReply | null {
+  const jsonBlock = extractJsonObject(raw);
+  if (!jsonBlock) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonBlock) as {
+      replyToMessageId?: string | null;
+      content?: string;
+      message?: string;
+      output?: string;
+    };
+    const content = (parsed.content ?? parsed.message ?? parsed.output ?? "").trim();
+    if (!content) {
+      return null;
     }
 
-    if (mode === "builder") {
-      return trimMessage(
-        `The user input gives us something concrete. Let's convert it into one testable claim and one minimum validation step so the idea becomes defensible.`,
-        180,
-      );
-    }
+    const meta = toReplyMetadata(room, typeof parsed.replyToMessageId === "string" ? parsed.replyToMessageId : null);
+    return {
+      ...meta,
+      content: trimText(content),
+    };
+  } catch {
+    return null;
+  }
+}
 
-    return trimMessage(
-      `The user just changed the discussion with a concrete input. We should decide whether it reduces uncertainty or creates a new requirement before moving on.`,
-      180,
-    );
+function finalizeParticipantReply(raw: string, room: DiscussionRoom): ParticipantReply {
+  const parsed = parseParticipantReply(raw, room);
+  if (parsed) {
+    return parsed;
   }
 
-  if (mode === "critic") {
-    return trimMessage(
-      latest
-        ? `I still don't buy it. You answered the direction, but the acceptance condition is still vague: what exactly proves ${topicHint} is worth doing?`
-        : `My first reaction is no. ${topicHint} still feels too broad and too easy to challenge on validation.`,
-      180,
-    );
+  const fallback = pickFallbackReply(room);
+  return {
+    ...fallback,
+    content: trimText(raw),
+  };
+}
+
+function buildMockParticipantReply(room: DiscussionRoom, role: DiscussionRole): ParticipantReply {
+  const profile = getResearchProfile(room.researchDirectionKey);
+  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const reply = pickFallbackReply(room);
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
+  const language = room.discussionLanguage;
+
+  if (language === "zh-CN") {
+    const content =
+      latestUser && reply.replyToMessageId
+        ? `先回应这条新证据：它${template?.key === "reviewer" ? "还不足以直接改变结论" : "确实改变了讨论重心"}。接下来我会围绕${profile.evaluationAxes[0]}和${profile.evidenceStandards[0]}继续推进判断。`
+        : template?.key === "reviewer"
+          ? `我仍然卡在${profile.failureModes[0]}。没有更扎实的${profile.evidenceStandards[0]}，这个结论还站不稳。`
+          : template?.key === "advisor"
+            ? `可以继续，但必须把主张收缩到一个可验证命题。下一步要直接补上${profile.evidenceStandards[0]}。`
+            : `我更关心${profile.evaluationAxes[0]}。如果这点说不清，后面的争论都会发散。`;
+    return { ...reply, content: trimText(content, 220) };
   }
 
-  if (mode === "builder") {
-    return trimMessage(
-      latest
-        ? "Then let's narrow it. We should cut scope, make one claim measurable, and define the minimum experiment that would change the verdict."
-        : "There is something here, but only if we shrink it into one defensible problem with a clear validation path.",
-      180,
-    );
-  }
+  const content =
+    latestUser && reply.replyToMessageId
+      ? `I need to address this new evidence first. It changes the discussion focus, but it still has to clear ${profile.evidenceStandards[0]}.`
+      : template?.key === "reviewer"
+        ? `${profile.mockCritic} The weakest point is still ${profile.failureModes[0]}.`
+        : template?.key === "advisor"
+          ? `${profile.mockBuilder} I would narrow the claim and tie it directly to ${profile.evidenceStandards[0]}.`
+          : profile.mockNeutral;
 
-  return trimMessage(
-    latest
-      ? "The discussion is still fuzzy because the acceptance criterion is not explicit yet. Someone should state what would count as a convincing win."
-      : "Before we go further, define the real decision target. Otherwise everyone will argue at a different level.",
-    180,
-  );
+  return { ...reply, content: trimText(content, 220) };
 }
 
 function buildMockRecorderMessage(room: DiscussionRoom, finalMode: boolean): string {
-  const participants = room.roles
-    .filter((role) => role.enabled && role.kind === "participant")
-    .map((role) => role.name)
-    .join(", ");
+  const profile = getResearchProfile(room.researchDirectionKey);
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
 
-  const latestUserMessage = room.messages
-    .filter((message) => message.kind === "user")
-    .slice(-1)[0]?.content;
+  if (room.discussionLanguage === "zh-CN") {
+    if (finalMode) {
+      return trimText(
+        [
+          "最终判断：这个方向可以继续，但必须更收缩、更可验证。",
+          `判断依据：讨论已集中到 ${profile.evaluationAxes[0]}，但 ${profile.failureModes[0]} 仍未完全消除。`,
+          latestUser ? `用户证据影响：最新用户证据改变了讨论重心，但尚未单独构成决定性证据。` : "用户证据影响：本轮没有新的用户证据改写判断。",
+          `下一步：补上 ${profile.evidenceStandards[0]}，再决定是否进入更强结论。`,
+        ].join("\n"),
+        420,
+      );
+    }
 
-  if (finalMode) {
-    return trimMessage(
+    return trimText(
       [
-        "Verdict: continue only with a narrower scope.",
-        `Why: the core idea is still interesting, but it only becomes defensible once ${participants} define a concrete success criterion and a minimum validation plan.`,
-        latestUserMessage ? `Useful new evidence: ${latestUserMessage}` : "",
-        "Biggest blocker: evidence quality.",
-        "Next step: rewrite the proposal around one testable claim.",
-      ]
-        .filter(Boolean)
-        .join(" "),
+        `当前最强主张：讨论正在围绕 ${profile.evaluationAxes[0]} 收敛。`,
+        `最强反驳：${profile.failureModes[0]} 仍是主要阻碍。`,
+        latestUser ? "用户证据影响：最新用户证据已被吸收，但尚未彻底改写结论。" : "用户证据影响：暂无新的用户证据。",
+        `下一轮必须解决：${profile.evidenceStandards[0]} 是否足以支持更强判断。`,
+      ].join("\n"),
       360,
     );
   }
 
-  return trimMessage(
+  if (finalMode) {
+    return trimText(
+      [
+        "Final judgment: continue only in a narrower and more testable form.",
+        `Why: the room is converging on ${profile.evaluationAxes[0]}, but ${profile.failureModes[0]} still limits confidence.`,
+        latestUser ? "User evidence impact: the latest user evidence changed the discussion focus, but not enough to close the case." : "User evidence impact: no new user evidence materially changed the judgment.",
+        `Next action: provide ${profile.evidenceStandards[0]} before strengthening the claim.`,
+      ].join("\n"),
+      420,
+    );
+  }
+
+  return trimText(
     [
-      `Checkpoint: ${participants} are converging on one point: the idea needs a sharper acceptance criterion.`,
-      "Strongest objection: validation is still weak.",
-      "Strongest repair: narrow the scope and define one minimum experiment.",
-      latestUserMessage ? `User input worth carrying forward: ${latestUserMessage}` : "",
-    ]
-      .filter(Boolean)
-      .join(" "),
-    300,
+      `Strongest current claim: the room is converging on ${profile.evaluationAxes[0]}.`,
+      `Strongest rebuttal: ${profile.failureModes[0]} remains the main blocker.`,
+      latestUser ? "User evidence impact: the latest user evidence shifted the room, but did not settle the dispute." : "User evidence impact: no fresh user evidence changed the room.",
+      `Next round must settle whether ${profile.evidenceStandards[0]} can be met.`,
+    ].join("\n"),
+    360,
   );
 }
 
-async function requestOpenAICompatible(role: DiscussionRole, payload: { system: string; user: string }): Promise<string> {
+async function requestOpenAICompatible(role: DiscussionRole, payload: TextPromptPayload): Promise<string> {
   const base = role.provider.endpoint.trim().replace(/\/+$/, "");
   const url = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -267,20 +405,18 @@ async function requestOpenAICompatible(role: DiscussionRole, payload: { system: 
   const data = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
-
   const content = data.choices?.[0]?.message?.content?.trim();
   if (!content) {
     throw new Error("OpenAI-compatible provider returned empty content.");
   }
-
-  return trimMessage(content, 260);
+  return content;
 }
 
 async function requestCustomHttp(
   room: DiscussionRoom,
   role: DiscussionRole,
-  payload: { system: string; user: string; finalMode?: boolean },
-): Promise<string> {
+  payload: TextPromptPayload,
+): Promise<{ content: string; replyToMessageId?: string | null }> {
   const response = await fetch(role.provider.endpoint, {
     method: "POST",
     headers: {
@@ -302,14 +438,16 @@ async function requestCustomHttp(
     content?: string;
     message?: string;
     output?: string;
+    replyToMessageId?: string | null;
   };
-
   const content = data.content ?? data.message ?? data.output;
   if (!content?.trim()) {
     throw new Error("Custom HTTP provider returned empty content.");
   }
-
-  return trimMessage(content, payload.finalMode ? 360 : 240);
+  return {
+    content,
+    replyToMessageId: data.replyToMessageId ?? null,
+  };
 }
 
 function parseArgsString(input: string): string[] {
@@ -394,20 +532,18 @@ async function runCommand(
 
     child.on("error", (error) => {
       clearTimeout(timer);
-      if (settled) {
-        return;
+      if (!settled) {
+        settled = true;
+        reject(error);
       }
-      settled = true;
-      reject(error);
     });
 
     child.on("close", (exitCode) => {
       clearTimeout(timer);
-      if (settled) {
-        return;
+      if (!settled) {
+        settled = true;
+        resolve({ stdout, stderr, exitCode });
       }
-      settled = true;
-      resolve({ stdout, stderr, exitCode });
     });
 
     child.stdin.write(promptText);
@@ -450,14 +586,11 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
     await fs.unlink(outputFile).catch(() => undefined);
 
     if (content.trim()) {
-      return trimMessage(content, 260);
+      return content.trim();
     }
 
-    const stderrTail = result.stderr.trim().split(/\r?\n/).slice(-8).join("\n");
     if (result.exitCode !== 0) {
-      throw new Error(
-        `Codex CLI failed with exit code ${result.exitCode}. ${stderrTail || "No stderr was captured."}`,
-      );
+      throw new Error(`Codex CLI failed with exit code ${result.exitCode}.`);
     }
 
     throw new Error("Codex CLI returned no final message.");
@@ -466,13 +599,7 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
 
     if (/ENOENT|not recognized|not found/i.test(message)) {
       throw new Error(
-        "Codex CLI could not be executed. Install `@openai/codex` via npm or change the preset command to a runnable `codex` or `npx` path.",
-      );
-    }
-
-    if (/Access is denied|EACCES/i.test(message)) {
-      throw new Error(
-        "Codex CLI is configured, but Windows blocked execution. Try `command = npx` and `launcherArgs = -y @openai/codex`, or point to a runnable `codex.cmd`.",
+        "Codex CLI could not be executed. Install @openai/codex or switch the preset to `command = npx` and `launcherArgs = -y @openai/codex`.",
       );
     }
 
@@ -480,40 +607,49 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
   }
 }
 
-function buildParticipantPromptPayload(room: DiscussionRoom, role: DiscussionRole): { system: string; user: string } {
+function buildParticipantPromptPayload(room: DiscussionRoom, role: DiscussionRole): TextPromptPayload {
+  const candidates = getReplyCandidates(room);
   return {
-    system: buildParticipantSystemPrompt(role),
-    user: buildParticipantUserPrompt(room, role),
+    system: buildParticipantSystemPrompt(room, role, candidates),
+    user: buildParticipantUserPrompt(room, role, candidates),
   };
 }
 
-function buildRecorderPromptPayload(
-  room: DiscussionRoom,
-  role: DiscussionRole,
-  finalMode: boolean,
-): { system: string; user: string } {
+function buildRecorderPromptPayload(room: DiscussionRoom, role: DiscussionRole, finalMode: boolean): TextPromptPayload {
   return {
-    system: buildRecorderSystemPrompt(role, finalMode),
+    system: buildRecorderSystemPrompt(room, role, finalMode),
     user: buildRecorderUserPrompt(room, finalMode),
+    finalMode,
   };
 }
 
-export async function generateParticipantContent(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
+export async function generateParticipantContent(room: DiscussionRoom, role: DiscussionRole): Promise<ParticipantReply> {
   if (role.provider.type === "mock") {
-    return buildMockParticipantMessage(room, role);
+    return buildMockParticipantReply(room, role);
   }
 
   const prompt = buildParticipantPromptPayload(room, role);
 
-  if (role.provider.type === "openai-compatible") {
-    return requestOpenAICompatible(role, prompt);
-  }
-
   if (role.provider.type === "custom-http") {
-    return requestCustomHttp(room, role, prompt);
+    const result = await requestCustomHttp(room, role, prompt);
+    const parsed = parseParticipantReply(result.content, room);
+    if (parsed) {
+      return parsed;
+    }
+
+    const replyMeta = toReplyMetadata(room, result.replyToMessageId ?? null);
+    return {
+      ...replyMeta,
+      content: trimText(result.content),
+    };
   }
 
-  return requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
+  const raw =
+    role.provider.type === "openai-compatible"
+      ? await requestOpenAICompatible(role, prompt)
+      : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
+
+  return finalizeParticipantReply(raw, room);
 }
 
 export async function generateRecorderCheckpoint(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
@@ -522,16 +658,14 @@ export async function generateRecorderCheckpoint(room: DiscussionRoom, role: Dis
   }
 
   const prompt = buildRecorderPromptPayload(room, role, false);
+  const raw =
+    role.provider.type === "custom-http"
+      ? (await requestCustomHttp(room, role, prompt)).content
+      : role.provider.type === "openai-compatible"
+        ? await requestOpenAICompatible(role, prompt)
+        : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
-  if (role.provider.type === "openai-compatible") {
-    return requestOpenAICompatible(role, prompt);
-  }
-
-  if (role.provider.type === "custom-http") {
-    return requestCustomHttp(room, role, prompt);
-  }
-
-  return requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
+  return trimText(raw, 420);
 }
 
 export async function generateRecorderFinal(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
@@ -540,14 +674,12 @@ export async function generateRecorderFinal(room: DiscussionRoom, role: Discussi
   }
 
   const prompt = buildRecorderPromptPayload(room, role, true);
+  const raw =
+    role.provider.type === "custom-http"
+      ? (await requestCustomHttp(room, role, prompt)).content
+      : role.provider.type === "openai-compatible"
+        ? await requestOpenAICompatible(role, prompt)
+        : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
-  if (role.provider.type === "openai-compatible") {
-    return requestOpenAICompatible(role, prompt);
-  }
-
-  if (role.provider.type === "custom-http") {
-    return requestCustomHttp(room, role, { ...prompt, finalMode: true });
-  }
-
-  return requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
+  return trimText(raw, 480);
 }

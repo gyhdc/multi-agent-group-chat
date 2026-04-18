@@ -10,6 +10,26 @@ function getRecorder(room: DiscussionRoom): DiscussionRole | undefined {
   return room.roles.find((role) => role.enabled && role.kind === "recorder");
 }
 
+function getReplyMetadata(room: DiscussionRoom, replyToMessageId: string | null | undefined): Pick<
+  ChatMessage,
+  "replyToMessageId" | "replyToRoleName" | "replyToExcerpt"
+> {
+  if (!replyToMessageId) {
+    return {
+      replyToMessageId: null,
+      replyToRoleName: null,
+      replyToExcerpt: null,
+    };
+  }
+
+  const target = room.messages.find((message) => message.id === replyToMessageId);
+  return {
+    replyToMessageId: target?.id ?? null,
+    replyToRoleName: target?.roleName ?? null,
+    replyToExcerpt: target ? target.content.replace(/\r/g, "").trim().slice(0, 110) : null,
+  };
+}
+
 function appendMessage(room: DiscussionRoom, message: Omit<ChatMessage, "id" | "createdAt">): void {
   room.messages.push({
     id: randomUUID(),
@@ -19,12 +39,13 @@ function appendMessage(room: DiscussionRoom, message: Omit<ChatMessage, "id" | "
   room.updatedAt = new Date().toISOString();
 }
 
-export function addUserMessage(room: DiscussionRoom, content: string): DiscussionRoom {
+export function addUserMessage(room: DiscussionRoom, content: string, replyToMessageId?: string | null): DiscussionRoom {
   const normalized = content.replace(/\r/g, "").trim();
   if (!normalized) {
     throw new Error("User message cannot be empty.");
   }
 
+  const replyMeta = getReplyMetadata(room, replyToMessageId);
   room.state.totalTurns += 1;
   room.state.lastActiveRoleId = "user";
 
@@ -33,6 +54,7 @@ export function addUserMessage(room: DiscussionRoom, content: string): Discussio
     roleName: "You",
     kind: "user",
     content: normalized,
+    ...replyMeta,
     round: room.state.currentRound,
     turn: room.state.totalTurns,
   });
@@ -123,7 +145,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
 
   if (room.state.phase === "participants") {
     const speaker = participants[room.state.nextSpeakerIndex];
-    const content = await generateParticipantContent(room, speaker);
+    const reply = await generateParticipantContent(room, speaker);
 
     room.state.totalTurns += 1;
     room.state.lastActiveRoleId = speaker.id;
@@ -131,7 +153,10 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
       roleId: speaker.id,
       roleName: speaker.name,
       kind: "participant",
-      content,
+      content: reply.content,
+      replyToMessageId: reply.replyToMessageId,
+      replyToRoleName: reply.replyToRoleName,
+      replyToExcerpt: reply.replyToExcerpt,
       round: room.state.currentRound,
       turn: room.state.totalTurns,
     });
@@ -186,6 +211,9 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
       roleName: recorder.name,
       kind: "recorder",
       content: insight.content,
+      replyToMessageId: null,
+      replyToRoleName: null,
+      replyToExcerpt: null,
       round: room.state.currentRound,
       turn: room.state.totalTurns,
     });
@@ -219,6 +247,9 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
       roleName: recorder.name,
       kind: "recorder",
       content: insight.content,
+      replyToMessageId: null,
+      replyToRoleName: null,
+      replyToExcerpt: null,
       round: room.state.currentRound,
       turn: room.state.totalTurns,
     });

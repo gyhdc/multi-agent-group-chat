@@ -1,5 +1,24 @@
 export type ProviderType = "mock" | "openai-compatible" | "custom-http" | "codex-cli";
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type DiscussionLanguage = "zh-CN" | "en-US";
+export type ResearchDirectionKey =
+  | "general"
+  | "ai-ml"
+  | "computer-vision"
+  | "nlp-llm"
+  | "robotics-systems"
+  | "biomedical-health"
+  | "civil-geotechnical"
+  | "social-science-policy";
+export type RoleTemplateKey =
+  | "reviewer"
+  | "advisor"
+  | "methodologist"
+  | "domain-expert"
+  | "experimentalist"
+  | "statistician"
+  | "industry-skeptic"
+  | "recorder";
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -36,6 +55,7 @@ export interface DiscussionRole {
   id: string;
   name: string;
   kind: DiscussionRoleKind;
+  roleTemplateKey: RoleTemplateKey | null;
   persona: string;
   principles: string;
   voiceStyle: string;
@@ -52,6 +72,9 @@ export interface ChatMessage {
   roleName: string;
   kind: MessageKind;
   content: string;
+  replyToMessageId?: string | null;
+  replyToRoleName?: string | null;
+  replyToExcerpt?: string | null;
   round: number;
   turn: number;
   createdAt: string;
@@ -86,6 +109,10 @@ export interface DiscussionRoom {
   title: string;
   topic: string;
   objective: string;
+  discussionLanguage: DiscussionLanguage;
+  researchDirectionKey: ResearchDirectionKey;
+  researchDirectionNote: string;
+  autoRunDelaySeconds: number;
   maxRounds: number;
   checkpointEveryRound: boolean;
   roles: DiscussionRole[];

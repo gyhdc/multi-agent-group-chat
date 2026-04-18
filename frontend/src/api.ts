@@ -57,10 +57,10 @@ export const api = {
     request<DiscussionRoom>(`/api/rooms/${roomId}/insights/${insightId}/toggle-save`, {
       method: "POST",
     }),
-  addUserMessage: (roomId: string, content: string) =>
+  addUserMessage: (roomId: string, content: string, replyToMessageId?: string | null) =>
     request<DiscussionRoom>(`/api/rooms/${roomId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, replyToMessageId: replyToMessageId ?? null }),
     }),
   listProviderPresets: () => request<ProviderPreset[]>("/api/provider-presets"),
   createProviderPreset: (preset: Partial<ProviderPreset>) =>

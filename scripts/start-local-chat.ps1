@@ -9,6 +9,8 @@ $runtimeFile = Join-Path $runtimeDir "runtime.json"
 $backendScript = Join-Path $PSScriptRoot "dev-backend.ps1"
 $frontendScript = Join-Path $PSScriptRoot "dev-frontend.ps1"
 
+. (Join-Path $PSScriptRoot "common.ps1")
+
 function Test-TcpPort {
   param(
     [string]$HostName,
@@ -81,7 +83,7 @@ if ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -or (Test-TcpPort -HostName 
 }
 
 if (-not $SkipInstall -and -not (Test-Path (Join-Path $root "node_modules"))) {
-  & "D:\nodejs\npm.cmd" install
+  Invoke-RepoNpm install
   if ($LASTEXITCODE -ne 0) {
     throw "npm install failed."
   }

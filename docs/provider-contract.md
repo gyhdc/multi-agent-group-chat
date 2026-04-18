@@ -74,12 +74,20 @@ Return any one of these fields:
 { "output": "The role's next short message." }
 ```
 
-The app trims the response into a short chat-style turn.
+Optional targeted reply metadata is also supported:
+
+```json
+{ "content": "This evidence still does not clear the acceptance bar.", "replyToMessageId": "message-id" }
+```
+
+The app trims the response into a short chat-style turn. If `replyToMessageId` is omitted, the message is still accepted.
 
 ## Behavioral Expectations
 
 - Participants should reply with 1 to 3 short sentences
 - Participants should react to the latest objections, evidence, and any user intervention
+- The latest user-supplied evidence should be treated as the highest-priority signal in the next turn
+- If a participant returns `replyToMessageId`, the content should actually address that message's claim or evidence
 - Recorder roles should output concise checkpoint notes or a compact final conclusion
 - Avoid markdown lists unless absolutely necessary
 - Avoid repeating earlier turns word-for-word

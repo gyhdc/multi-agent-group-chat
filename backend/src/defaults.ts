@@ -1,11 +1,14 @@
 import { randomUUID } from "crypto";
+import { inferRoleTemplateKey } from "./discussionCatalog";
 import {
   DiscussionRole,
   DiscussionRoleKind,
+  DiscussionLanguage,
   DiscussionRoom,
   DiscussionSummary,
   ProviderConfig,
   ProviderPreset,
+  ResearchDirectionKey,
 } from "./types";
 
 export const PRESET_IDS = {
@@ -16,6 +19,9 @@ export const PRESET_IDS = {
 } as const;
 
 const nowIso = (): string => new Date().toISOString();
+const defaultDiscussionLanguage: DiscussionLanguage = "zh-CN";
+const defaultResearchDirection: ResearchDirectionKey = "general";
+const defaultAutoRunDelaySeconds = 2;
 
 export const createProviderConfig = (type: ProviderConfig["type"] = "mock"): ProviderConfig => ({
   type,
@@ -136,6 +142,7 @@ const createRole = (input: Partial<DiscussionRole> & Pick<DiscussionRole, "name"
   id: input.id ?? randomUUID(),
   name: input.name.trim(),
   kind: input.kind,
+  roleTemplateKey: input.roleTemplateKey ?? inferRoleTemplateKey(input.name, input.kind),
   persona: input.persona?.trim() || "",
   principles: input.principles?.trim() || "",
   voiceStyle: input.voiceStyle?.trim() || "",
@@ -150,6 +157,12 @@ export const normalizeRole = (input: Partial<DiscussionRole>): DiscussionRole =>
   createRole({
     name: input.name?.trim() || "Untitled Role",
     kind: (input.kind as DiscussionRoleKind) === "recorder" ? "recorder" : "participant",
+    roleTemplateKey:
+      input.roleTemplateKey ??
+      inferRoleTemplateKey(
+        input.name?.trim() || "Untitled Role",
+        (input.kind as DiscussionRoleKind) === "recorder" ? "recorder" : "participant",
+      ),
     providerPresetId: input.providerPresetId ?? null,
     ...input,
   });
@@ -166,41 +179,48 @@ export const createBlankRoom = (): DiscussionRoom => {
     title: "New Discussion Room",
     topic: "State the problem, idea, paper topic, or product direction to discuss.",
     objective: "Use focused, short group-chat turns to challenge, improve, and sharpen the decision until a recorder can produce a useful conclusion.",
+    discussionLanguage: defaultDiscussionLanguage,
+    researchDirectionKey: defaultResearchDirection,
+    researchDirectionNote: "",
+    autoRunDelaySeconds: defaultAutoRunDelaySeconds,
     maxRounds: 4,
     checkpointEveryRound: true,
     roles: [
       createRole({
-        name: "Builder",
+        name: "Reviewer",
         kind: "participant",
-        accentColor: "#2f7f73",
+        roleTemplateKey: "reviewer",
+        accentColor: "#8b3d3d",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
-        persona: "A constructive operator who wants to turn a rough idea into a workable plan.",
-        principles: "Salvage what is promising, tighten the scope, and propose concrete repair moves.",
-        voiceStyle: "Short, direct, group-chat style.",
-        goal: "Make the idea more executable and easier to defend.",
+        persona: "A demanding reviewer who grants acceptance only when the proposal is genuinely sharp and evidence-backed.",
+        principles: "Attack novelty inflation, scope drift, weak evidence, and any claim that would not survive peer review.",
+        voiceStyle: "Short, cold, explicit, and professionally skeptical.",
+        goal: "Reject weak or underspecified work unless it becomes defensible under serious scrutiny.",
       }),
       createRole({
-        name: "Skeptic",
+        name: "Advisor",
         kind: "participant",
-        accentColor: "#a24e43",
+        roleTemplateKey: "advisor",
+        accentColor: "#2e6f95",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
-        persona: "A strict critic who looks for weak assumptions, vague claims, and missing validation.",
-        principles: "Attack the strongest unresolved weakness, not random details.",
-        voiceStyle: "Sharp, short, no fluff.",
-        goal: "Expose the most likely reason the idea would fail or be rejected.",
+        persona: "An experienced advisor who rescues rough ideas by cutting scope and structuring a credible validation path.",
+        principles: "Acknowledge real flaws, then repair them with scope cuts, measurable claims, and realistic evaluation steps.",
+        voiceStyle: "Compact, strategic, and solution-driven.",
+        goal: "Transform the proposal until a serious reviewer could accept it conditionally.",
       }),
       createRole({
         name: "Recorder",
         kind: "recorder",
+        roleTemplateKey: "recorder",
         accentColor: "#5b6475",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
-        persona: "A neutral recorder who tracks the strongest objection, the best repair, and the current verdict.",
-        principles: "Be concise, insightful, and decision-oriented.",
-        voiceStyle: "Compact notes and verdicts.",
-        goal: "Produce high-signal notes and a final conclusion worth keeping.",
+        persona: "A neutral analyst who tracks decisive objections, strongest repairs, evidence shifts, and the current verdict.",
+        principles: "Record only what materially changes the eventual decision.",
+        voiceStyle: "Tight notes with real insight.",
+        goal: "Produce high-signal checkpoint notes and a final conclusion worth keeping.",
       }),
     ],
     messages: [],
@@ -225,10 +245,15 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     "Research idea: use a multi-role discussion system to let a reviewer attack a proposal and an advisor iteratively repair it until the scope, contribution, and validation plan become defensible.";
   room.objective =
     "The reviewer should resist weak ideas. The advisor should not roleplay vaguely; they must concretely narrow the problem, improve the method, and earn conditional acceptance.";
+  room.discussionLanguage = defaultDiscussionLanguage;
+  room.researchDirectionKey = "ai-ml";
+  room.researchDirectionNote = "Assume the audience is a serious research group or paper-review setting.";
+  room.autoRunDelaySeconds = defaultAutoRunDelaySeconds;
   room.roles = [
     createRole({
       name: "Reviewer",
       kind: "participant",
+      roleTemplateKey: "reviewer",
       accentColor: "#8b3d3d",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),
@@ -240,6 +265,7 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     createRole({
       name: "Advisor",
       kind: "participant",
+      roleTemplateKey: "advisor",
       accentColor: "#2e6f95",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),
@@ -251,6 +277,7 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     createRole({
       name: "Recorder",
       kind: "recorder",
+      roleTemplateKey: "recorder",
       accentColor: "#5b6475",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),
