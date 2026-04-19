@@ -866,6 +866,42 @@ function resolveSpawnArgs(command: string, args: string[]): string[] {
   return ["/d", "/s", "/c", commandLine];
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function extractCodexCliFailureMessage(stdout: string, stderr: string, exitCode: number | null): string | null {
+  const combined = stripAnsi([stderr, stdout].filter(Boolean).join("\n"));
+  const lines = combined
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const unsupportedModelLine = lines.find((line) =>
+    /model is not supported when using Codex with a ChatGPT account/i.test(line),
+  );
+  if (unsupportedModelLine) {
+    const modelMatch = unsupportedModelLine.match(/'([^']+)' model is not supported when using Codex with a ChatGPT account/i);
+    const modelLabel = modelMatch?.[1] ? `\`${modelMatch[1]}\`` : "the configured model";
+    return `Codex CLI rejected ${modelLabel} for the current ChatGPT-backed login. Leave the Model field blank to use Codex's default model, or choose a model supported by your account.`;
+  }
+
+  const preferredLine =
+    [...lines].reverse().find((line) => line.startsWith("ERROR:")) ??
+    [...lines].reverse().find((line) => /invalid_request_error|authentication|unauthorized|forbidden|not supported|timed out/i.test(line));
+
+  if (!preferredLine) {
+    return exitCode === null ? "Codex CLI terminated unexpectedly." : null;
+  }
+
+  const normalized = preferredLine.replace(/^ERROR:\s*/, "").trim();
+  if (!normalized) {
+    return exitCode === null ? "Codex CLI terminated unexpectedly." : null;
+  }
+
+  return `Codex CLI failed: ${normalized.slice(0, 400)}`;
+}
+
 async function requestCodexCli(role: DiscussionRole, promptText: string): Promise<string> {
   const workingDirectory = role.provider.workingDirectory.trim() || APP_ROOT;
   await fs.access(workingDirectory).catch(() => {
@@ -909,10 +945,15 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
     }
 
     if (result.exitCode !== 0) {
-      throw new Error(`Codex CLI failed with exit code ${result.exitCode}.`);
+      throw new Error(
+        extractCodexCliFailureMessage(result.stdout, result.stderr, result.exitCode) ??
+          `Codex CLI failed with exit code ${result.exitCode}.`,
+      );
     }
 
-    throw new Error("Codex CLI returned no final message.");
+    throw new Error(
+      extractCodexCliFailureMessage(result.stdout, result.stderr, result.exitCode) ?? "Codex CLI returned no final message.",
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown local CLI error.";
 

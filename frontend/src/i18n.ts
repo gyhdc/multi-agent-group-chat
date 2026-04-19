@@ -205,7 +205,7 @@ export const UI_COPY = {
     "Use this for your own local agent bridge or service. The backend POSTs room context, role info, and prompt as JSON. Your service must return content, and can optionally include replyToMessageId and forceReplyRoleId.",
   ),
   guideCodexTitle: text("Codex CLI", "Codex CLI"),
-  guideCodexBody: text("适用于本地直接调用 Codex。优先尝试 Command=codex；如果本机别名不可用，改成 Command=npx，Launcher Args=-y @openai/codex。", "Use this to call Codex locally. Try Command=codex first; if the alias is unavailable, switch to Command=npx and Launcher Args=-y @openai/codex."),
+  guideCodexBody: text("适用于本地直接调用 Codex。Model 建议留空，让 Codex 自动选择当前账号可用的默认模型；如果本机别名不可用，改成 Command=npx，Launcher Args=-y @openai/codex。", "Use this to call Codex locally. Leave Model blank so Codex can choose the default model available to the current account. If the alias is unavailable, switch to Command=npx and Launcher Args=-y @openai/codex."),
   guideLocalAgentTitle: text("本地 Agent 推荐路线", "Local Agent Recommendation"),
   guideLocalAgentBody: text("想直接让本机 CLI 型 agent 说话，用 Codex CLI；想接任意本地 agent 或多步代理系统，用 Custom HTTP bridge。流程：群聊角色 -> 本项目后端 -> 本地 bridge/CLI -> agent。", "Use Codex CLI for a local CLI-style agent. Use a Custom HTTP bridge for any local agent service or multi-step agent system. Flow: chat role -> app backend -> local bridge/CLI -> agent."),
   presetNameLabel: text("套件名称", "Preset Name"),
@@ -324,8 +324,8 @@ export const UI_COPY = {
     "openai-compatible": text("适用于任意兼容 /v1/chat/completions 的服务。", "Any /v1/chat/completions style API endpoint."),
     "custom-http": text("通过 POST JSON 调用你自己的本地 agent bridge。", "Call your own local agent bridge via POST JSON."),
     "codex-cli": text(
-      "在本地运行 Codex CLI；如果别名不可用，可改成 npx + @openai/codex。",
-      "Run Codex locally; if the alias is unavailable, switch to npx with @openai/codex.",
+      "在本地运行 Codex CLI；Model 建议留空，如别名不可用可改成 npx + @openai/codex。",
+      "Run Codex locally. Leave Model blank to use Codex defaults; if the alias is unavailable, switch to npx with @openai/codex.",
     ),
   } satisfies Record<ProviderType, LocalizedText>,
   providerType: {
@@ -422,6 +422,14 @@ export function localizeKnownError(locale: UiLocale, message: string): string {
         return locale === "zh-CN"
           ? "Windows 下无法启动本地 CLI。请使用真实可执行文件或 `.cmd` 启动器（例如 `D:\\nodejs\\npx.cmd`），并确认工作目录存在。"
           : message;
+      }
+      if (message.startsWith("Codex CLI rejected")) {
+        return locale === "zh-CN"
+          ? "Codex CLI 当前登录态不支持这个模型。把 Model 留空，让 Codex 自动选择默认模型，或改成你的账号支持的模型。"
+          : message;
+      }
+      if (message.startsWith("Codex CLI failed:")) {
+        return locale === "zh-CN" ? `Codex CLI 执行失败：${message.slice("Codex CLI failed:".length).trim()}` : message;
       }
       if (message.startsWith("Request failed:")) {
         return locale === "zh-CN" ? `请求失败：${message.slice("Request failed:".length).trim()}` : message;

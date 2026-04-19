@@ -792,6 +792,25 @@ function App() {
     return saved;
   }
 
+  async function stepDiscussion(options: { stopAutoRunning: boolean; withTaskLabel: boolean }): Promise<void> {
+    const execute = async () => {
+      const room = await ensureRunningRoom();
+      const stepped = await api.stepRoom(room.id);
+      syncRoom(stepped);
+    };
+
+    if (options.stopAutoRunning) {
+      setAutoRunning(false);
+    }
+
+    if (options.withTaskLabel) {
+      await runTask(t(UI_COPY.step), execute);
+      return;
+    }
+
+    await execute();
+  }
+
   async function performAutoStep(): Promise<void> {
     if (!draftRoom || autoRunBusyRef.current) {
       return;
@@ -801,9 +820,7 @@ function App() {
     setError("");
 
     try {
-      const room = await ensureRunningRoom();
-      const stepped = await api.stepRoom(room.id);
-      syncRoom(stepped);
+      await stepDiscussion({ stopAutoRunning: false, withTaskLabel: false });
     } catch (nextError) {
       setAutoRunning(false);
       setError(getDisplayErrorMessage(nextError instanceof Error ? nextError.message : t(UI_COPY.autoPlayFailed)));
@@ -901,18 +918,21 @@ function App() {
   }
 
   function setProviderType(provider: ProviderConfig, nextType: ProviderType): ProviderConfig {
+    const sameType = provider.type === nextType;
     return {
       ...createProviderDraft(nextType),
       ...provider,
       type: nextType,
       model:
         nextType === "mock"
-          ? provider.model || "mock-discussion-v2"
-          : nextType === "codex-cli"
-            ? provider.model || "gpt-5-codex"
-            : provider.model,
-      command: nextType === "codex-cli" ? provider.command || "codex" : provider.command,
-      timeoutMs: nextType === "codex-cli" ? provider.timeoutMs || 240000 : provider.timeoutMs || 120000,
+          ? sameType && provider.model
+            ? provider.model
+            : "mock-discussion-v2"
+          : sameType
+            ? provider.model
+            : "",
+      command: nextType === "codex-cli" ? (sameType ? provider.command || "codex" : "codex") : "",
+      timeoutMs: nextType === "codex-cli" ? (sameType ? provider.timeoutMs || 240000 : 240000) : sameType ? provider.timeoutMs || 120000 : 120000,
     };
   }
 
@@ -1017,12 +1037,7 @@ function App() {
   }
 
   async function handleStep(): Promise<void> {
-    setAutoRunning(false);
-    await runTask(t(UI_COPY.step), async () => {
-      const room = await ensureRunningRoom();
-      const stepped = await api.stepRoom(room.id);
-      syncRoom(stepped);
-    });
+    await stepDiscussion({ stopAutoRunning: true, withTaskLabel: true });
   }
 
   function handleRun(): void {
@@ -1417,7 +1432,7 @@ function App() {
           <input
             value={provider.model}
             onChange={(event) => onChange({ ...provider, model: event.target.value })}
-            placeholder={provider.type === "codex-cli" ? "gpt-5-codex" : t(UI_COPY.modelLabel)}
+            placeholder={provider.type === "codex-cli" ? "Optional. Leave blank to use Codex default." : t(UI_COPY.modelLabel)}
           />
         </label>
 
@@ -2728,6 +2743,7 @@ function App() {
                       (nextProvider) =>
                         updateRole(selectedRole.id, (role) => ({
                           ...role,
+                          providerPresetId: null,
                           provider: nextProvider,
                         })),
                       "role",

@@ -241,7 +241,7 @@ export const RESEARCH_DIRECTION_DEFINITIONS: Record<ResearchDirectionKey, Resear
 export function createProviderDraft(type: ProviderType = "mock"): ProviderConfig {
   return {
     type,
-    model: type === "mock" ? "mock-discussion-v2" : type === "codex-cli" ? "gpt-5-codex" : "",
+    model: type === "mock" ? "mock-discussion-v2" : "",
     endpoint: "",
     apiKey: "",
     temperature: 0.7,

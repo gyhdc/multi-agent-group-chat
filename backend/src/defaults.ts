@@ -29,9 +29,7 @@ export const createProviderConfig = (type: ProviderConfig["type"] = "mock"): Pro
   model:
     type === "mock"
       ? "mock-discussion-v2"
-      : type === "codex-cli"
-        ? "gpt-5-codex"
-        : "",
+      : "",
   endpoint: "",
   apiKey: "",
   temperature: 0.7,
@@ -114,7 +112,8 @@ export const createBuiltInProviderPresets = (): ProviderPreset[] => {
     {
       id: PRESET_IDS.codexCli,
       name: "Local Codex CLI",
-      description: "Run Codex locally with `codex exec`. If Windows alias fails, switch command to `npx` and launcher args to `-y @openai/codex`.",
+      description:
+        "Run Codex locally with `codex exec`. Leave the model blank to use Codex defaults. If the Windows alias fails, switch command to `npx` and launcher args to `-y @openai/codex`.",
       builtIn: true,
       provider: {
         ...createProviderConfig("codex-cli"),

@@ -231,6 +231,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-local-chat.ps
 - 方式 2：
   - `Command = npx`
   - `Launcher Args = -y @openai/codex`
+- `Model` 建议留空，让 Codex 自动选择当前账号可用的默认模型
+- 如果你当前是 Windows，`codex` 别名不可用时优先改成 `npx` 或 `npx.cmd`
 
 适用场景：
 
@@ -538,6 +540,8 @@ Typical setup:
 - Option 2:
   - `Command = npx`
   - `Launcher Args = -y @openai/codex`
+- Leave `Model` blank so Codex can choose the default model available to the current account
+- On Windows, prefer `npx` or `npx.cmd` if the `codex` alias is unavailable
 
 Best when:
 
