@@ -187,6 +187,24 @@ function App() {
     readBooleanStorage(STORAGE_KEYS.insightPanelCollapsed, false),
   );
   const [studioOpen, setStudioOpen] = useState<boolean>(() => readBooleanStorage(STORAGE_KEYS.studioOpen, true));
+  const [topInfoCollapsed, setTopInfoCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.topInfoCollapsed, true),
+  );
+  const [objectiveCollapsed, setObjectiveCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.objectiveCollapsed, true),
+  );
+  const [directionCollapsed, setDirectionCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.directionCollapsed, true),
+  );
+  const [languageCollapsed, setLanguageCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.languageCollapsed, true),
+  );
+  const [documentCollapsed, setDocumentCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.documentCollapsed, true),
+  );
+  const [rolesCollapsed, setRolesCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.rolesCollapsed, true),
+  );
   const [userMessageDraft, setUserMessageDraft] = useState("");
   const [pendingReplyToMessageId, setPendingReplyToMessageId] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -328,6 +346,14 @@ function App() {
   );
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
+  const activeRoleSummaryText = useMemo(() => {
+    if (activeRoles.length === 0) {
+      return t(UI_COPY.roleStripEmpty);
+    }
+    const names = activeRoles.slice(0, 4).map((role) => role.name);
+    const overflow = activeRoles.length - names.length;
+    return overflow > 0 ? `${names.join(" / ")} +${overflow}` : names.join(" / ");
+  }, [activeRoles, locale]);
 
   function getDisplayErrorMessage(message: string): string {
     return localizeKnownError(locale, message);
@@ -440,6 +466,51 @@ function App() {
     return room.roles.find((role) => role.id === hardTargetRoleId)?.name ?? null;
   }
 
+  function getDirectionSummaryText(room: DiscussionRoom): string {
+    const directionLabel = getDirectionLabelForRoom(room);
+    const directionDescription = getDirectionDescriptionForRoom(room).trim();
+    return directionDescription ? `${directionLabel} · ${directionDescription}` : directionLabel;
+  }
+
+  function getLanguageSummaryText(room: DiscussionRoom): string {
+    const languageLabel =
+      room.discussionLanguage === "zh-CN" ? t(UI_COPY.discussionLanguageZh) : t(UI_COPY.discussionLanguageEn);
+    const statusText = room.state.status === "idle" ? t(UI_COPY.idleHint) : getStatusLabel(locale, room.state.status);
+    return `${languageLabel} · ${statusText}`;
+  }
+
+  function renderTopInfoCard(props: {
+    label: string;
+    primary: string;
+    secondary?: string;
+    collapsed: boolean;
+    onToggle: () => void;
+    collapseLabel: string;
+    expandLabel: string;
+    testId: string;
+  }) {
+    const { label, primary, secondary, collapsed, onToggle, collapseLabel, expandLabel, testId } = props;
+
+    return (
+      <article className={`objective-card top-info-card ${collapsed ? "collapsed" : ""}`}>
+        <div className="objective-card-head">
+          <span className="strip-label">{label}</span>
+          <button
+            type="button"
+            className="section-toggle"
+            aria-expanded={!collapsed}
+            data-testid={testId}
+            onClick={onToggle}
+          >
+            {collapsed ? expandLabel : collapseLabel}
+          </button>
+        </div>
+        <p className={collapsed ? "compact-card-text clamp-2" : "compact-card-text"}>{primary}</p>
+        {!collapsed && secondary ? <p className="helper-text">{secondary}</p> : null}
+      </article>
+    );
+  }
+
   useEffect(() => {
     void loadAll();
   }, []);
@@ -459,6 +530,30 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.studioOpen, String(studioOpen));
   }, [studioOpen]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.topInfoCollapsed, String(topInfoCollapsed));
+  }, [topInfoCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.objectiveCollapsed, String(objectiveCollapsed));
+  }, [objectiveCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.directionCollapsed, String(directionCollapsed));
+  }, [directionCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.languageCollapsed, String(languageCollapsed));
+  }, [languageCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.documentCollapsed, String(documentCollapsed));
+  }, [documentCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.rolesCollapsed, String(rolesCollapsed));
+  }, [rolesCollapsed]);
 
   useEffect(() => {
     if (!selectedRoomId && rooms.length > 0) {
@@ -1589,8 +1684,26 @@ function App() {
         </div>
       </aside>
 
-      <main className="stage">
-        <section className="stage-header">
+      <main className={`stage ${topInfoCollapsed ? "top-info-collapsed" : ""}`}>
+        {topInfoCollapsed ? (
+          <section className="topic-summary-bar" data-testid="topic-summary-bar">
+            <div className="topic-summary-copy">
+              <p className="topic-summary-room">{draftRoom.title}</p>
+              <p className="topic-summary-text clamp-2">{draftRoom.topic}</p>
+            </div>
+            <button
+              type="button"
+              className="ghost-button compact-toggle-button"
+              data-testid="top-info-expand-button"
+              aria-expanded={!topInfoCollapsed}
+              onClick={() => setTopInfoCollapsed(false)}
+            >
+              {t(UI_COPY.expandTopInfo)}
+            </button>
+          </section>
+        ) : (
+          <>
+            <section className="stage-header">
           <div>
             <p className="eyebrow">{t(UI_COPY.brandEyebrow)}</p>
             <h2>{draftRoom.title}</h2>
@@ -1619,56 +1732,109 @@ function App() {
             >
               {studioOpen ? t(UI_COPY.hideConfig) : t(UI_COPY.showConfig)}
             </button>
+            <button
+              type="button"
+              className="ghost-button"
+              data-testid="top-info-collapse-button"
+              aria-expanded={!topInfoCollapsed}
+              onClick={() => setTopInfoCollapsed(true)}
+            >
+              {t(UI_COPY.collapseTopInfo)}
+            </button>
             <button className="primary-button" onClick={() => void handleSaveRoom()} disabled={Boolean(busyLabel)}>
               {t(UI_COPY.saveRoom)}
             </button>
           </div>
         </section>
 
-        <section className="objective-strip">
-          <article className="objective-card">
-            <span className="strip-label">{t(UI_COPY.roomSectionObjective)}</span>
-            <p>{draftRoom.objective}</p>
-          </article>
-          <article className="objective-card">
-            <span className="strip-label">{t(UI_COPY.roomSectionDirection)}</span>
-            <p>{getDirectionLabelForRoom(draftRoom)}</p>
-            <p className="helper-text">
-              {getDirectionDescriptionForRoom(draftRoom)}
-            </p>
-          </article>
-          <article className="objective-card">
-            <span className="strip-label">{t(UI_COPY.roomSectionLanguage)}</span>
-            <p>
-              {draftRoom.discussionLanguage === "zh-CN"
-                ? t(UI_COPY.discussionLanguageZh)
-                : t(UI_COPY.discussionLanguageEn)}
-            </p>
-            <p className="helper-text">
-              {draftRoom.state.status === "idle" ? t(UI_COPY.idleHint) : getStatusLabel(locale, draftRoom.state.status)}
-            </p>
-          </article>
-        </section>
+            <section className="objective-strip">
+              {renderTopInfoCard({
+                label: t(UI_COPY.roomSectionObjective),
+                primary: draftRoom.objective,
+                collapsed: objectiveCollapsed,
+                onToggle: () => setObjectiveCollapsed((current) => !current),
+                collapseLabel: t(UI_COPY.collapseObjective),
+                expandLabel: t(UI_COPY.expandObjective),
+                testId: "objective-collapse-button",
+              })}
+              {renderTopInfoCard({
+                label: t(UI_COPY.roomSectionDirection),
+                primary: directionCollapsed ? getDirectionSummaryText(draftRoom) : getDirectionLabelForRoom(draftRoom),
+                secondary: getDirectionDescriptionForRoom(draftRoom),
+                collapsed: directionCollapsed,
+                onToggle: () => setDirectionCollapsed((current) => !current),
+                collapseLabel: t(UI_COPY.collapseDirection),
+                expandLabel: t(UI_COPY.expandDirection),
+                testId: "direction-collapse-button",
+              })}
+              {renderTopInfoCard({
+                label: t(UI_COPY.roomSectionLanguage),
+                primary:
+                  languageCollapsed
+                    ? getLanguageSummaryText(draftRoom)
+                    : draftRoom.discussionLanguage === "zh-CN"
+                      ? t(UI_COPY.discussionLanguageZh)
+                      : t(UI_COPY.discussionLanguageEn),
+                secondary:
+                  draftRoom.state.status === "idle" ? t(UI_COPY.idleHint) : getStatusLabel(locale, draftRoom.state.status),
+                collapsed: languageCollapsed,
+                onToggle: () => setLanguageCollapsed((current) => !current),
+                collapseLabel: t(UI_COPY.collapseLanguage),
+                expandLabel: t(UI_COPY.expandLanguage),
+                testId: "language-collapse-button",
+              })}
+            </section>
 
-        {draftRoom.documentAsset ? (
-          <section className="document-focus-panel">
-            <div className="panel-header tight">
-              <div>
-                <p className="eyebrow">{t(UI_COPY.documentSourceTitle)}</p>
-                <h3>{draftRoom.documentAsset.title}</h3>
-                <p className="helper-text">{getDocumentFocusSummary(draftRoom)}</p>
-              </div>
-              <div className="inline-actions">
-                <span className="busy-chip">{getDocumentModeLabel(draftRoom.documentDiscussionMode)}</span>
-                <span className="busy-chip">{getDocumentStatusLabel(draftRoom)}</span>
-              </div>
+            {draftRoom.documentAsset ? (
+              <section className={`document-focus-panel ${documentCollapsed ? "collapsed" : ""}`}>
+                <div className="panel-header tight">
+                  <div>
+                    <p className="eyebrow">{t(UI_COPY.documentSourceTitle)}</p>
+                    <h3>{draftRoom.documentAsset.title}</h3>
+                    <p className="helper-text">{getDocumentFocusSummary(draftRoom)}</p>
+                  </div>
+                  <div className="inline-actions">
+                    {!documentCollapsed ? (
+                      <span className="busy-chip">{getDocumentModeLabel(draftRoom.documentDiscussionMode)}</span>
+                    ) : null}
+                    <span className="busy-chip">{getDocumentStatusLabel(draftRoom)}</span>
+                    <button
+                      type="button"
+                      className="section-toggle"
+                      aria-expanded={!documentCollapsed}
+                      data-testid="document-collapse-button"
+                      onClick={() => setDocumentCollapsed((current) => !current)}
+                    >
+                      {documentCollapsed ? t(UI_COPY.expandDocumentPanel) : t(UI_COPY.collapseDocumentPanel)}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+        <section className={`role-section ${rolesCollapsed ? "collapsed" : ""}`}>
+          <div className="panel-header tight">
+            <div>
+              <p className="eyebrow">{t(UI_COPY.roomSectionRoles)}</p>
+              <p className="helper-text role-strip-summary">{activeRoleSummaryText}</p>
             </div>
-          </section>
-        ) : null}
-
-        <section className="role-strip">
-          {activeRoles.map((role) => (
-            <article key={role.id} className={`role-pill ${role.id === selectedRoleId ? "selected" : ""}`}>
+            <div className="inline-actions">
+              <span className="busy-chip">{`${t(UI_COPY.roomSectionRoles)}: ${activeRoles.length}`}</span>
+              <button
+                type="button"
+                className="section-toggle"
+                aria-expanded={!rolesCollapsed}
+                data-testid="roles-collapse-button"
+                onClick={() => setRolesCollapsed((current) => !current)}
+              >
+                {rolesCollapsed ? t(UI_COPY.expandRoles) : t(UI_COPY.collapseRoles)}
+              </button>
+            </div>
+          </div>
+          {!rolesCollapsed ? (
+            <div className="role-strip">
+              {activeRoles.map((role) => (
+                <article key={role.id} className={`role-pill ${role.id === selectedRoleId ? "selected" : ""}`}>
               <div className="role-pill-head">
                 <span className="role-pill-dot" style={{ backgroundColor: role.accentColor }} />
                 <span className="role-pill-name">{role.name}</span>
@@ -1680,7 +1846,11 @@ function App() {
               <p className="role-pill-goal">{role.goal}</p>
             </article>
           ))}
+            </div>
+          ) : null}
         </section>
+          </>
+        )}
 
         {error ? <div className="error-banner">{error}</div> : null}
 

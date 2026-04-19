@@ -108,6 +108,47 @@ code {
   overflow: hidden;
 }
 
+.stage.top-info-collapsed {
+  gap: 8px;
+}
+
+.topic-summary-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 24px;
+  border: 1px solid rgba(44, 54, 68, 0.08);
+  box-shadow: 0 18px 45px rgba(42, 47, 59, 0.08);
+  background: rgba(255, 252, 246, 0.82);
+}
+
+.topic-summary-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.topic-summary-room,
+.topic-summary-text {
+  margin: 0;
+}
+
+.topic-summary-room {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #7b8694;
+}
+
+.topic-summary-text {
+  color: #243242;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
 .rail-top,
 .room-card-head,
 .role-pill-head {
@@ -330,6 +371,34 @@ code {
   padding: 10px 12px;
 }
 
+.top-info-card {
+  min-width: 0;
+}
+
+.top-info-card.collapsed {
+  padding: 8px 10px;
+}
+
+.objective-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.top-info-card .strip-label {
+  margin-bottom: 0;
+}
+
+.top-info-card .helper-text {
+  margin-top: 6px;
+}
+
+.compact-card-text {
+  color: #243242;
+}
+
 .strip-label {
   display: block;
   margin-bottom: 6px;
@@ -352,6 +421,30 @@ code {
   gap: 8px;
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+.role-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 24px;
+  border: 1px solid rgba(44, 54, 68, 0.08);
+  box-shadow: 0 18px 45px rgba(42, 47, 59, 0.08);
+  background: rgba(255, 252, 246, 0.82);
+}
+
+.role-section.collapsed {
+  gap: 0;
+}
+
+.role-section .panel-header,
+.document-focus-panel .panel-header {
+  margin-bottom: 0;
+}
+
+.role-strip-summary {
+  margin: 4px 0 0;
 }
 
 .role-pill {
@@ -496,6 +589,10 @@ code {
   border: 1px solid rgba(44, 54, 68, 0.08);
   background: rgba(255, 252, 246, 0.82);
   box-shadow: 0 18px 45px rgba(42, 47, 59, 0.08);
+}
+
+.document-focus-panel.collapsed {
+  padding: 10px 12px;
 }
 
 .composer-card textarea {
@@ -832,6 +929,18 @@ code {
   flex-wrap: wrap;
 }
 
+.section-toggle {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(29, 40, 54, 0.08);
+  color: #253240;
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
+}
+
 .studio-tabs button,
 .primary-button,
 .ghost-button,
@@ -853,7 +962,8 @@ code {
 .primary-button:hover,
 .ghost-button:hover,
 .danger-button:hover,
-.text-button:hover {
+.text-button:hover,
+.section-toggle:hover {
   transform: translateY(-1px);
 }
 
@@ -1230,6 +1340,14 @@ button:disabled {
   .stage-header {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .topic-summary-bar,
+  .objective-card-head,
+  .role-section .panel-header,
+  .document-focus-panel .panel-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .left-rail.collapsed {
