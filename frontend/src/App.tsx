@@ -596,6 +596,109 @@ function App() {
   );
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
+  const guideCopy = useMemo(
+    () =>
+      locale === "zh-CN"
+        ? {
+            introHint: "下面写的是这个项目当前界面里实际需要填写的字段，以及每种接入方式各自的输入要求。",
+            labels: {
+              useCase: "适用场景",
+              required: "必填字段",
+              optional: "可选字段",
+              example: "填写示例",
+              request: "请求格式",
+              response: "返回格式",
+              notes: "注意事项",
+            },
+            mock: {
+              required: "Provider：选择 Mock Demo\nModel：可保留默认值；这里只是本地标签，不会真的请求模型",
+              notes: "不需要填写 Endpoint、API Key、Command 等接入字段。适合先检查房间流程、UI 和 prompt 走向。",
+            },
+            openai: {
+              required:
+                "Provider：选择 OpenAI-Compatible API\nEndpoint：填写兼容 /v1 的基础地址，例如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1\nModel：必填，例如 gpt-5.4、gpt-4.1、qwen2.5:14b、deepseek-r1:32b",
+              optional:
+                "API Key：OpenAI 或其他需要鉴权的服务通常必填；本地 Ollama / 无鉴权 vLLM 通常可留空\nTemperature：采样温度\nMax Tokens：单次输出上限",
+              example:
+                "OpenAI 官方接口：\nEndpoint: https://api.openai.com/v1\nModel: gpt-5.4\nAPI Key: sk-...\n\nOllama 本地接口：\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: 留空",
+              notes: "Endpoint 填基础地址即可，不要手动补 /chat/completions；应用会自动拼接请求路径。",
+            },
+            custom: {
+              required:
+                "Provider：选择 Custom HTTP Agent\nEndpoint：你的 POST JSON 接口地址，例如 http://127.0.0.1:8000/chat",
+              optional:
+                "API Key：如果 bridge 需要鉴权就填写；应用会以 Bearer Token 写入 Authorization 头\nModel / Temperature / Max Tokens：可选；这些值会随 role.provider 一起发给你的 bridge，由你自己决定是否使用",
+              request:
+                '{\n  "room": { ... },\n  "role": { ... },\n  "prompt": {\n    "system": "...",\n    "user": "..."\n  }\n}',
+              response:
+                '{\n  "content": "你的回复文本",\n  "replyToMessageId": null,\n  "forceReplyRoleId": null\n}',
+              notes: "返回必须是 JSON。内容字段优先读取 content，也兼容 message / output。replyToMessageId 和 forceReplyRoleId 都是可选字段。",
+            },
+            codex: {
+              required:
+                "Provider：选择 Local Codex CLI\nCommand：可填 codex；Windows 上更稳的是 D:\\nodejs\\npx.cmd\nModel：建议留空，让 Codex 自动选择当前账号可用模型",
+              optional:
+                "Launcher Args：只有 Command = npx / npx.cmd 时才需要，填写 -y @openai/codex\nWorking Directory：建议填你希望 agent 执行的项目根目录；留空则使用应用根目录\nTimeout：CLI 最长等待时间\nSandbox：运行权限\nSkip Git Repo Check：在非 Git 目录里可勾选",
+              example:
+                "Windows 推荐配置：\nCommand: D:\\nodejs\\npx.cmd\nLauncher Args: -y @openai/codex\nModel: 留空\nWorking Directory: D:\\your\\repo\nSandbox: workspace-write\nTimeout: 120000",
+              notes: "不要自己在 Launcher Args 里填写 exec、--sandbox、--output-last-message 这些运行参数；应用会自动追加。",
+            },
+            localAgent: {
+              useCase:
+                "只想直接调用本机 Codex CLI：用 Local Codex CLI\n已经有自己的 bridge、想接别的本地 agent、或要走多步代理系统：用 Custom HTTP Agent",
+            },
+          }
+        : {
+            introHint: "The blocks below map directly to the fields shown in this UI, including what each integration method expects you to fill in.",
+            labels: {
+              useCase: "When to Use",
+              required: "Required Fields",
+              optional: "Optional Fields",
+              example: "Example",
+              request: "Request Shape",
+              response: "Response Shape",
+              notes: "Notes",
+            },
+            mock: {
+              required: "Provider: choose Mock Demo\nModel: you can keep the default value; it is only a local label and does not call a real model",
+              notes: "You do not need Endpoint, API Key, Command, or any live integration fields. Use it to verify room flow, UI behavior, and prompt wiring first.",
+            },
+            openai: {
+              required:
+                "Provider: choose OpenAI-Compatible API\nEndpoint: fill the compatible /v1 base URL, such as https://api.openai.com/v1 or http://127.0.0.1:11434/v1\nModel: required, for example gpt-5.4, gpt-4.1, qwen2.5:14b, or deepseek-r1:32b",
+              optional:
+                "API Key: usually required for OpenAI or any authenticated service; usually optional for local Ollama or unauthenticated vLLM\nTemperature: sampling temperature\nMax Tokens: single-response output cap",
+              example:
+                "OpenAI official endpoint:\nEndpoint: https://api.openai.com/v1\nModel: gpt-5.4\nAPI Key: sk-...\n\nLocal Ollama endpoint:\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: leave blank",
+              notes: "Fill the base endpoint only. Do not manually append /chat/completions; the app adds the request path automatically.",
+            },
+            custom: {
+              required:
+                "Provider: choose Custom HTTP Agent\nEndpoint: your POST JSON endpoint, for example http://127.0.0.1:8000/chat",
+              optional:
+                "API Key: fill it if your bridge needs authentication; the app sends it as a Bearer token in the Authorization header\nModel / Temperature / Max Tokens: optional; these values are forwarded inside role.provider and your bridge can choose whether to use them",
+              request:
+                '{\n  "room": { ... },\n  "role": { ... },\n  "prompt": {\n    "system": "...",\n    "user": "..."\n  }\n}',
+              response:
+                '{\n  "content": "your reply text",\n  "replyToMessageId": null,\n  "forceReplyRoleId": null\n}',
+              notes: "The response must be JSON. The app prefers content, and also accepts message / output. Both replyToMessageId and forceReplyRoleId are optional.",
+            },
+            codex: {
+              required:
+                "Provider: choose Local Codex CLI\nCommand: you can use codex; on Windows the more reliable choice is D:\\nodejs\\npx.cmd\nModel: recommended to leave blank so Codex can choose an account-supported model",
+              optional:
+                "Launcher Args: only needed when Command = npx / npx.cmd, typically -y @openai/codex\nWorking Directory: recommended to point at the project root the agent should operate in; if left blank the app root is used\nTimeout: maximum wait time for the CLI\nSandbox: runtime permission mode\nSkip Git Repo Check: enable this when the working directory is not a Git repo",
+              example:
+                "Recommended Windows setup:\nCommand: D:\\nodejs\\npx.cmd\nLauncher Args: -y @openai/codex\nModel: leave blank\nWorking Directory: D:\\your\\repo\nSandbox: workspace-write\nTimeout: 120000",
+              notes: "Do not put exec, --sandbox, --output-last-message, or similar runtime flags into Launcher Args; the app appends them automatically.",
+            },
+            localAgent: {
+              useCase:
+                "Only want to call local Codex directly: use Local Codex CLI\nAlready have your own bridge, want another local agent, or need a multi-step agent system: use Custom HTTP Agent",
+            },
+          },
+    [locale],
+  );
   const visibleLoadingRoleSnapshot = useMemo(() => {
     if (loadingRoleSnapshot) {
       return loadingRoleSnapshot;
@@ -1938,6 +2041,15 @@ function App() {
     );
   }
 
+  function renderGuideDetail(label: string, content: string, variant: "text" | "code" = "text") {
+    return (
+      <div className="guide-detail-card">
+        <span className="guide-detail-label">{label}</span>
+        <pre className={variant === "code" ? "guide-code" : "guide-detail-copy"}>{content}</pre>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="loading-state">
@@ -3211,6 +3323,7 @@ function App() {
               <div>
                 <p className="eyebrow">{t(UI_COPY.providerPresetsEyebrow)}</p>
                 <h3>{t(UI_COPY.guideIntroTitle)}</h3>
+                <p className="guide-intro-note">{guideCopy.introHint}</p>
               </div>
               <button
                 type="button"
@@ -3225,25 +3338,46 @@ function App() {
             <div className="guide-section">
               <h4>{t(UI_COPY.guideMockTitle)}</h4>
               <p>{t(UI_COPY.guideMockBody)}</p>
+              <div className="guide-detail-stack">
+                {renderGuideDetail(guideCopy.labels.required, guideCopy.mock.required)}
+                {renderGuideDetail(guideCopy.labels.notes, guideCopy.mock.notes)}
+              </div>
             </div>
             <div className="guide-section">
               <h4>{t(UI_COPY.guideOpenAITitle)}</h4>
               <p>{t(UI_COPY.guideOpenAIBody)}</p>
-              <code className="guide-code">Endpoint: https://api.openai.com/v1 | Model: gpt-5.4 | API Key: sk-...</code>
+              <div className="guide-detail-stack">
+                {renderGuideDetail(guideCopy.labels.required, guideCopy.openai.required)}
+                {renderGuideDetail(guideCopy.labels.optional, guideCopy.openai.optional)}
+                {renderGuideDetail(guideCopy.labels.example, guideCopy.openai.example, "code")}
+                {renderGuideDetail(guideCopy.labels.notes, guideCopy.openai.notes)}
+              </div>
             </div>
             <div className="guide-section">
               <h4>{t(UI_COPY.guideCustomTitle)}</h4>
               <p>{t(UI_COPY.guideCustomBody)}</p>
-              <code className="guide-code">POST http://127.0.0.1:8000/chat -&gt; &#123; "content": "...", "replyToMessageId": null, "forceReplyRoleId": null &#125;</code>
+              <div className="guide-detail-stack">
+                {renderGuideDetail(guideCopy.labels.required, guideCopy.custom.required)}
+                {renderGuideDetail(guideCopy.labels.optional, guideCopy.custom.optional)}
+                {renderGuideDetail(guideCopy.labels.request, guideCopy.custom.request, "code")}
+                {renderGuideDetail(guideCopy.labels.response, guideCopy.custom.response, "code")}
+                {renderGuideDetail(guideCopy.labels.notes, guideCopy.custom.notes)}
+              </div>
             </div>
             <div className="guide-section">
               <h4>{t(UI_COPY.guideCodexTitle)}</h4>
               <p>{t(UI_COPY.guideCodexBody)}</p>
-              <code className="guide-code">Command: codex | Args: exec ...  or  Command: npx | Args: -y @openai/codex</code>
+              <div className="guide-detail-stack">
+                {renderGuideDetail(guideCopy.labels.required, guideCopy.codex.required)}
+                {renderGuideDetail(guideCopy.labels.optional, guideCopy.codex.optional)}
+                {renderGuideDetail(guideCopy.labels.example, guideCopy.codex.example, "code")}
+                {renderGuideDetail(guideCopy.labels.notes, guideCopy.codex.notes)}
+              </div>
             </div>
             <div className="guide-section">
               <h4>{t(UI_COPY.guideLocalAgentTitle)}</h4>
               <p>{t(UI_COPY.guideLocalAgentBody)}</p>
+              {renderGuideDetail(guideCopy.labels.useCase, guideCopy.localAgent.useCase)}
               <pre className="guide-flow">{t(UI_COPY.guideFlowText)}</pre>
             </div>
           </section>

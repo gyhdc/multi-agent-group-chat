@@ -1574,10 +1574,39 @@ input[type="color"] {
   margin: 0;
 }
 
+.guide-intro-note {
+  margin: 6px 0 0;
+  color: #617080;
+}
+
+.guide-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.guide-detail-card {
+  border-radius: 18px;
+  border: 1px solid rgba(49, 67, 88, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px 14px;
+}
+
+.guide-detail-label {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #415366;
+}
+
+.guide-detail-copy,
 .guide-code,
 .guide-flow {
   display: block;
-  margin-top: 10px;
+  margin: 0;
   padding: 12px 14px;
   border-radius: 16px;
   background: rgba(28, 41, 58, 0.06);
