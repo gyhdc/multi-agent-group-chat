@@ -1196,6 +1196,31 @@ function App() {
     await execute();
   }
 
+  async function advanceRoomOnce(room: DiscussionRoom): Promise<DiscussionRoom> {
+    let nextRoom = room;
+    await runWithSpeakingIndicator(room, async () => {
+      const stepped = await api.stepRoom(room.id);
+      nextRoom = stepped;
+      syncRoom(stepped);
+    });
+    return nextRoom;
+  }
+
+  async function advanceAfterUserMessage(room: DiscussionRoom): Promise<DiscussionRoom> {
+    if (room.state.status !== "running") {
+      return room;
+    }
+
+    const requiresForcedReply = room.state.pendingRequiredReplies.length > 0;
+    let nextRoom = await advanceRoomOnce(room);
+
+    if (!requiresForcedReply || nextRoom.state.status !== "running") {
+      return nextRoom;
+    }
+
+    return advanceRoomOnce(nextRoom);
+  }
+
   async function performAutoStep(): Promise<void> {
     if (!draftRoom || autoRunBusyRef.current || busyLabelRef.current || stepPendingRef.current) {
       return;
@@ -1464,13 +1489,7 @@ function App() {
       syncRoom(room);
       setUserMessageDraft("");
       setPendingReplyToMessageId(null);
-
-      if (room.state.pendingRequiredReplies.length > 0) {
-        await runWithSpeakingIndicator(room, async () => {
-          const stepped = await api.stepRoom(room.id);
-          syncRoom(stepped);
-        });
-      }
+      await advanceAfterUserMessage(room);
     });
   }
 
@@ -2600,6 +2619,23 @@ function App() {
                   data-testid="user-intervention-input"
                   value={userMessageDraft}
                   onChange={(event) => setUserMessageDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key !== "Enter" ||
+                      !event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey ||
+                      event.metaKey ||
+                      event.nativeEvent.isComposing
+                    ) {
+                      return;
+                    }
+                    if (!draftRoom || !canIntervene || !userMessageDraft.trim() || Boolean(busyLabel)) {
+                      return;
+                    }
+                    event.preventDefault();
+                    void handleSendUserMessage();
+                  }}
                   placeholder={t(UI_COPY.userInterventionPlaceholder)}
                   disabled={!canIntervene}
                 />
