@@ -70,6 +70,20 @@ export interface ResearchDirectionPreset {
   updatedAt: string;
 }
 
+export interface RoleTemplatePreset {
+  id: string;
+  name: string;
+  kind: DiscussionRoleKind;
+  persona: string;
+  principles: string;
+  goal: string;
+  voiceStyle: string;
+  accentColor: string;
+  builtIn: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RoomDocumentAsset {
   id: string;
   fileName: string;
@@ -114,7 +128,7 @@ export interface DiscussionRole {
   id: string;
   name: string;
   kind: DiscussionRoleKind;
-  roleTemplateKey: RoleTemplateKey | null;
+  roleTemplateId: string | null;
   persona: string;
   principles: string;
   voiceStyle: string;

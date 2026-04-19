@@ -1,4 +1,4 @@
-import { DiscussionRoom, ProviderPreset, ResearchDirectionPreset } from "./types";
+import { DiscussionRoom, ProviderPreset, ResearchDirectionPreset, RoleTemplatePreset } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -107,6 +107,7 @@ export const api = {
     }),
   listProviderPresets: () => request<ProviderPreset[]>("/api/provider-presets"),
   listResearchDirections: () => request<ResearchDirectionPreset[]>("/api/research-directions"),
+  listRoleTemplates: () => request<RoleTemplatePreset[]>("/api/role-templates"),
   createResearchDirection: (direction: Partial<ResearchDirectionPreset>) =>
     request<ResearchDirectionPreset>("/api/research-directions", {
       method: "POST",
@@ -119,6 +120,20 @@ export const api = {
     }),
   deleteResearchDirection: (directionId: string) =>
     request<void>(`/api/research-directions/${directionId}`, {
+      method: "DELETE",
+    }),
+  createRoleTemplate: (template: Partial<RoleTemplatePreset>) =>
+    request<RoleTemplatePreset>("/api/role-templates", {
+      method: "POST",
+      body: JSON.stringify(template),
+    }),
+  updateRoleTemplate: (templateId: string, template: Partial<RoleTemplatePreset>) =>
+    request<RoleTemplatePreset>(`/api/role-templates/${templateId}`, {
+      method: "PUT",
+      body: JSON.stringify(template),
+    }),
+  deleteRoleTemplate: (templateId: string) =>
+    request<void>(`/api/role-templates/${templateId}`, {
       method: "DELETE",
     }),
   createProviderPreset: (preset: Partial<ProviderPreset>) =>

@@ -10,6 +10,7 @@ import {
   ProviderConfig,
   ProviderPreset,
   ResearchDirectionKey,
+  RoleTemplateKey,
 } from "./types";
 
 export const PRESET_IDS = {
@@ -138,11 +139,26 @@ export const normalizePreset = (input: Partial<ProviderPreset>): ProviderPreset 
   };
 };
 
-const createRole = (input: Partial<DiscussionRole> & Pick<DiscussionRole, "name" | "kind">): DiscussionRole => ({
+type RoleInput = Partial<DiscussionRole> &
+  Pick<DiscussionRole, "name" | "kind"> & {
+    roleTemplateKey?: RoleTemplateKey | null;
+  };
+
+function resolveRoleTemplateId(input: Pick<RoleInput, "roleTemplateId" | "roleTemplateKey" | "name" | "kind">): string | null {
+  if (typeof input.roleTemplateId === "string" && input.roleTemplateId.trim()) {
+    return input.roleTemplateId.trim();
+  }
+  if (typeof input.roleTemplateKey === "string" && input.roleTemplateKey.trim()) {
+    return input.roleTemplateKey.trim();
+  }
+  return inferRoleTemplateKey(input.name, input.kind);
+}
+
+const createRole = (input: RoleInput): DiscussionRole => ({
   id: input.id ?? randomUUID(),
   name: input.name.trim(),
   kind: input.kind,
-  roleTemplateKey: input.roleTemplateKey ?? inferRoleTemplateKey(input.name, input.kind),
+  roleTemplateId: resolveRoleTemplateId(input),
   persona: input.persona?.trim() || "",
   principles: input.principles?.trim() || "",
   voiceStyle: input.voiceStyle?.trim() || "",
@@ -157,12 +173,8 @@ export const normalizeRole = (input: Partial<DiscussionRole>): DiscussionRole =>
   createRole({
     name: input.name?.trim() || "Untitled Role",
     kind: (input.kind as DiscussionRoleKind) === "recorder" ? "recorder" : "participant",
-    roleTemplateKey:
-      input.roleTemplateKey ??
-      inferRoleTemplateKey(
-        input.name?.trim() || "Untitled Role",
-        (input.kind as DiscussionRoleKind) === "recorder" ? "recorder" : "participant",
-      ),
+    roleTemplateId: (input as Partial<DiscussionRole> & { roleTemplateKey?: RoleTemplateKey | null }).roleTemplateId,
+    roleTemplateKey: (input as Partial<DiscussionRole> & { roleTemplateKey?: RoleTemplateKey | null }).roleTemplateKey,
     providerPresetId: input.providerPresetId ?? null,
     ...input,
   });
@@ -211,7 +223,7 @@ export const createBlankRoom = (): DiscussionRoom => {
       createRole({
         name: "Reviewer",
         kind: "participant",
-        roleTemplateKey: "reviewer",
+        roleTemplateId: "reviewer",
         accentColor: "#8b3d3d",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
@@ -223,7 +235,7 @@ export const createBlankRoom = (): DiscussionRoom => {
       createRole({
         name: "Advisor",
         kind: "participant",
-        roleTemplateKey: "advisor",
+        roleTemplateId: "advisor",
         accentColor: "#2e6f95",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
@@ -235,7 +247,7 @@ export const createBlankRoom = (): DiscussionRoom => {
       createRole({
         name: "Recorder",
         kind: "recorder",
-        roleTemplateKey: "recorder",
+        roleTemplateId: "recorder",
         accentColor: "#5b6475",
         providerPresetId: PRESET_IDS.mock,
         provider: createProviderConfig("mock"),
@@ -286,7 +298,7 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     createRole({
       name: "Reviewer",
       kind: "participant",
-      roleTemplateKey: "reviewer",
+      roleTemplateId: "reviewer",
       accentColor: "#8b3d3d",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),
@@ -298,7 +310,7 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     createRole({
       name: "Advisor",
       kind: "participant",
-      roleTemplateKey: "advisor",
+      roleTemplateId: "advisor",
       accentColor: "#2e6f95",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),
@@ -310,7 +322,7 @@ export const createReviewerAdvisorRoom = (): DiscussionRoom => {
     createRole({
       name: "Recorder",
       kind: "recorder",
-      roleTemplateKey: "recorder",
+      roleTemplateId: "recorder",
       accentColor: "#5b6475",
       providerPresetId: PRESET_IDS.mock,
       provider: createProviderConfig("mock"),

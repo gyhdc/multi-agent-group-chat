@@ -273,7 +273,7 @@ function buildParticipantSystemPrompt(
   deliveryMode?: ParticipantGenerationOptions["deliveryMode"],
   selectionReason?: string,
 ): string {
-  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const template = getRoleTemplateProfile(role.roleTemplateId);
   const templateLines = template
     ? [
         `Template identity: ${template.defaultName}`,
@@ -394,7 +394,7 @@ function buildParticipantUserPrompt(
 }
 
 function buildRecorderSystemPrompt(room: DiscussionRoom, role: DiscussionRole, finalMode: boolean): string {
-  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const template = getRoleTemplateProfile(role.roleTemplateId);
   return [
     "You are the recorder and analytical note-taker for a serious multi-party research discussion.",
     "You do not debate. You extract the decisive signal and compress it into useful notes.",
@@ -575,7 +575,7 @@ function buildMockParticipantReply(
 ): ParticipantReply {
   const forcedReply = options.forcedReply ?? null;
   const profile = getResearchProfile(room.researchDirectionKey);
-  const template = getRoleTemplateProfile(role.roleTemplateKey);
+  const template = getRoleTemplateProfile(role.roleTemplateId);
   const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
   const reply = pickFallbackReply(room, forcedReply);
   const forceReplyTarget = !forcedReply && !latestUser ? getMockForceReplyTarget(room, role) : null;

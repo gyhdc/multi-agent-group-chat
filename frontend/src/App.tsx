@@ -5,9 +5,11 @@ import {
   createProviderDraft,
   createRoleFromTemplate,
   getAvailableRoleTemplates,
+  getBuiltInRoleTemplatePreset,
+  getBuiltInRoleTemplatePresets,
   getResearchDirectionDescription,
   getResearchDirectionLabel,
-  getRoleTemplateName,
+  isBuiltInRoleTemplateId,
   isBuiltInResearchDirection,
   PROVIDER_TYPE_ORDER,
   RESEARCH_DIRECTION_ORDER,
@@ -39,7 +41,7 @@ import {
   ProviderPreset,
   ProviderType,
   ResearchDirectionPreset,
-  RoleTemplateKey,
+  RoleTemplatePreset,
   ChatFontPreset,
   UiScalePreset,
   UiLocale,
@@ -53,6 +55,8 @@ type LoadingRoleSnapshot = {
   kind: DiscussionRoleKind;
   accentColor: string;
 };
+
+type AutoPlayState = "idle" | "running" | "pause-requested";
 
 const UI_SCALE_FACTORS: Record<UiScalePreset, number> = {
   compact: 0.9,
@@ -69,6 +73,7 @@ const CHAT_FONT_FACTORS: Record<ChatFontPreset, number> = {
 const ROOM_LIMIT_MAX = 999;
 const MESSAGE_COLLAPSE_MAX_LENGTH = 420;
 const MESSAGE_COLLAPSE_MAX_LINES = 8;
+const CUSTOM_ROLE_TEMPLATE_ID = "__custom-role-template__";
 
 function getEnabledParticipants(room: DiscussionRoom): DiscussionRole[] {
   return room.roles.filter((role) => role.enabled && role.kind === "participant");
@@ -341,6 +346,26 @@ function sortPresetsForDisplay(left: ProviderPreset, right: ProviderPreset): num
   return left.name.localeCompare(right.name);
 }
 
+function sortRoleTemplatesForDisplay(left: RoleTemplatePreset, right: RoleTemplatePreset): number {
+  if (left.builtIn !== right.builtIn) {
+    return left.builtIn ? -1 : 1;
+  }
+  return left.name.localeCompare(right.name);
+}
+
+function hasOutstandingForcedReplyWork(room: DiscussionRoom): boolean {
+  if (room.state.pendingRequiredReplies.length > 0) {
+    return true;
+  }
+
+  const exchange = room.state.activeExchange;
+  if (!exchange?.hardTargetRoleId) {
+    return false;
+  }
+
+  return !exchange.respondedRoleIds.includes(exchange.hardTargetRoleId);
+}
+
 function downloadTextFile(fileName: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -404,10 +429,18 @@ function App() {
   const [rooms, setRooms] = useState<DiscussionRoom[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [customResearchDirections, setCustomResearchDirections] = useState<ResearchDirectionPreset[]>([]);
+  const [roleTemplates, setRoleTemplates] = useState<RoleTemplatePreset[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [draftRoom, setDraftRoom] = useState<DiscussionRoom | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [selectedRoleTemplateId, setSelectedRoleTemplateId] = useState<string | null>(null);
+  const [templateLibraryKind, setTemplateLibraryKind] = useState<DiscussionRoleKind>("participant");
+  const [roleTemplatesCollapsed, setRoleTemplatesCollapsed] = useState<boolean>(() =>
+    readBooleanStorage(STORAGE_KEYS.roleTemplatesCollapsed, true),
+  );
+  const [roleTemplateDraft, setRoleTemplateDraft] = useState<RoleTemplatePreset | null>(null);
+  const [roleTemplateDirty, setRoleTemplateDirty] = useState(false);
   const [studioTab, setStudioTab] = useState<StudioTab>("roles");
   const [locale, setLocale] = useState<UiLocale>(() => readLocaleStorage());
   const [uiScalePreset, setUiScalePreset] = useState<UiScalePreset>(() => readUiScalePresetStorage());
@@ -440,7 +473,7 @@ function App() {
   const [userMessageDraft, setUserMessageDraft] = useState("");
   const [pendingReplyToMessageId, setPendingReplyToMessageId] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
-  const [autoRunning, setAutoRunning] = useState(false);
+  const [autoPlayState, setAutoPlayState] = useState<AutoPlayState>("idle");
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [expandedMessageIds, setExpandedMessageIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -471,6 +504,16 @@ function App() {
     () => presets.find((preset) => preset.id === selectedPresetId) ?? null,
     [presets, selectedPresetId],
   );
+  const builtInRoleTemplates = useMemo(() => getBuiltInRoleTemplatePresets(locale), [locale]);
+  const customRoleTemplates = useMemo(
+    () => roleTemplates.filter((template) => !template.builtIn).slice().sort(sortRoleTemplatesForDisplay),
+    [roleTemplates],
+  );
+  const allRoleTemplates = useMemo(
+    () => [...builtInRoleTemplates, ...customRoleTemplates],
+    [builtInRoleTemplates, customRoleTemplates],
+  );
+  const autoRunning = autoPlayState !== "idle";
 
   const builtInResearchDirections = useMemo(
     () =>
@@ -506,6 +549,15 @@ function App() {
   const selectedCustomResearchDirection = useMemo(
     () => customResearchDirections.find((direction) => direction.id === selectedCustomResearchDirectionId) ?? null,
     [customResearchDirections, selectedCustomResearchDirectionId],
+  );
+  const selectedRoleTemplate = useMemo(
+    () => allRoleTemplates.find((template) => template.id === selectedRoleTemplateId) ?? null,
+    [allRoleTemplates, selectedRoleTemplateId],
+  );
+  const displayedRoleTemplate = roleTemplateDraft ?? selectedRoleTemplate;
+  const activeRoleTemplates = useMemo(
+    () => allRoleTemplates.filter((template) => template.kind === templateLibraryKind).slice().sort(sortRoleTemplatesForDisplay),
+    [allRoleTemplates, templateLibraryKind],
   );
 
   const participantCount = useMemo(
@@ -699,6 +751,80 @@ function App() {
           },
     [locale],
   );
+  const templateCopy = useMemo(
+    () =>
+      locale === "zh-CN"
+        ? {
+            libraryEyebrow: "角色模板库",
+            libraryTitle: "可复用角色模板",
+            createTemplate: "新建模板",
+            duplicateTemplate: "复制为自定义模板",
+            saveTemplate: "保存模板",
+            deleteTemplate: "删除模板",
+            applyTemplate: "应用到当前角色",
+            saveCurrentRoleTemplate: "保存当前角色为模板",
+            templateName: "模板名称",
+            kindLabel: "模板类型",
+            participantKind: "参与者",
+            recorderKind: "记录员",
+            customLabel: "Custom",
+            noTemplateSelected: "选择一个模板查看或编辑。",
+            builtInHint: "内置模板只读；若要修改，请先复制为自定义模板。",
+            customHint: "自定义模板会全局保存，可复用于其他房间和角色。",
+            deleteConfirm: "确定删除角色模板“{name}”吗？",
+            templateNamePrompt: "输入新模板名称",
+            createParticipantDefault: "自定义参与者模板",
+            createRecorderDefault: "自定义记录员模板",
+            collapseLibrary: "收起模板库",
+            expandLibrary: "展开模板库",
+            unsavedChanges: "有未保存修改",
+          }
+        : {
+            libraryEyebrow: "Role Template Library",
+            libraryTitle: "Reusable Role Templates",
+            createTemplate: "New Template",
+            duplicateTemplate: "Duplicate as Custom",
+            saveTemplate: "Save Template",
+            deleteTemplate: "Delete Template",
+            applyTemplate: "Apply to Current Role",
+            saveCurrentRoleTemplate: "Save Current Role as Template",
+            templateName: "Template Name",
+            kindLabel: "Template Kind",
+            participantKind: "Participant",
+            recorderKind: "Recorder",
+            customLabel: "Custom",
+            noTemplateSelected: "Select one template to inspect or edit it.",
+            builtInHint: "Built-in templates are read-only. Duplicate one to customize it.",
+            customHint: "Custom templates are saved globally and can be reused across rooms and roles.",
+            deleteConfirm: "Delete role template \"{name}\"?",
+            templateNamePrompt: "Enter a name for the new template",
+            createParticipantDefault: "Custom Participant Template",
+            createRecorderDefault: "Custom Recorder Template",
+            collapseLibrary: "Collapse Library",
+            expandLibrary: "Expand Library",
+            unsavedChanges: "Unsaved changes",
+          },
+    [locale],
+  );
+  const autoPlayCopy = useMemo(
+    () =>
+      locale === "zh-CN"
+        ? {
+            requestPause: "请求暂停",
+            cancelPause: "取消暂停",
+            pauseRequested: "已请求暂停",
+            pauseAfterForcedReply: "将在当前强制回复结束后暂停",
+            pauseCanceled: "已取消暂停请求",
+          }
+        : {
+            requestPause: "Pause Safely",
+            cancelPause: "Cancel Pause",
+            pauseRequested: "Pause requested",
+            pauseAfterForcedReply: "Pausing after the current forced-reply chain",
+            pauseCanceled: "Pause request canceled",
+          },
+    [locale],
+  );
   const visibleLoadingRoleSnapshot = useMemo(() => {
     if (loadingRoleSnapshot) {
       return loadingRoleSnapshot;
@@ -709,11 +835,11 @@ function App() {
     if (draftRoom.state.status === "completed" || draftRoom.state.status === "stopped") {
       return null;
     }
-    if (!stepPending && !autoRunning) {
+    if (!stepPending && !shouldContinueAutoPlay(draftRoom, autoPlayState)) {
       return null;
     }
     return toLoadingRoleSnapshot(predictNextSpeakingRole(draftRoom));
-  }, [autoRunning, draftRoom, loadingRoleSnapshot, stepPending]);
+  }, [autoPlayState, draftRoom, loadingRoleSnapshot, stepPending]);
   const activeRoleSummaryText = useMemo(() => {
     if (activeRoles.length === 0) {
       return t(UI_COPY.roleStripEmpty);
@@ -733,6 +859,60 @@ function App() {
 
   function getPresetDisplayDescription(preset: ProviderPreset): string {
     return preset.builtIn ? getBuiltInPresetDescription(locale, preset.provider.type) : preset.description;
+  }
+
+  function getRoleTemplateDisplayName(templateId: string | null | undefined): string {
+    if (!templateId) {
+      return templateCopy.customLabel;
+    }
+    const template = allRoleTemplates.find((item) => item.id === templateId);
+    if (template) {
+      return template.name;
+    }
+    return isBuiltInRoleTemplateId(templateId) ? getBuiltInRoleTemplatePreset(templateId, locale)?.name ?? templateId : templateCopy.customLabel;
+  }
+
+  function resolveRoleTemplate(templateId: string | null | undefined): RoleTemplatePreset | null {
+    if (!templateId) {
+      return null;
+    }
+    return allRoleTemplates.find((template) => template.id === templateId) ?? null;
+  }
+
+  function getRoleTemplateSelectValue(role: DiscussionRole): string {
+    return role.roleTemplateId && allRoleTemplates.some((template) => template.id === role.roleTemplateId)
+      ? role.roleTemplateId
+      : CUSTOM_ROLE_TEMPLATE_ID;
+  }
+
+  function shouldContinueAutoPlay(room: DiscussionRoom | null, state: AutoPlayState): boolean {
+    if (!room || room.state.status !== "running") {
+      return false;
+    }
+    if (state === "running") {
+      return true;
+    }
+    return state === "pause-requested" && hasOutstandingForcedReplyWork(room);
+  }
+
+  function getAutoPlayButtonLabel(): string {
+    if (autoPlayState === "running") {
+      return autoPlayCopy.requestPause;
+    }
+    if (autoPlayState === "pause-requested") {
+      return autoPlayCopy.cancelPause;
+    }
+    return t(UI_COPY.autoPlay);
+  }
+
+  function getAutoPlayStatusText(): string | null {
+    if (!draftRoom || autoPlayState === "idle") {
+      return null;
+    }
+    if (autoPlayState === "pause-requested") {
+      return hasOutstandingForcedReplyWork(draftRoom) ? autoPlayCopy.pauseAfterForcedReply : autoPlayCopy.pauseRequested;
+    }
+    return t(UI_COPY.autoPlayRunning);
   }
 
   function getMessageMetaText(message: ChatMessage): string {
@@ -946,6 +1126,10 @@ function App() {
   }, [rolesCollapsed]);
 
   useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.roleTemplatesCollapsed, String(roleTemplatesCollapsed));
+  }, [roleTemplatesCollapsed]);
+
+  useEffect(() => {
     if (!selectedRoomId && rooms.length > 0) {
       setSelectedRoomId(rooms[0].id);
     }
@@ -964,12 +1148,41 @@ function App() {
   }, [customResearchDirections, selectedCustomResearchDirectionId]);
 
   useEffect(() => {
+    if (!selectedRole) {
+      return;
+    }
+    setTemplateLibraryKind((current) => (current === selectedRole.kind ? current : selectedRole.kind));
+    const nextTemplateId =
+      selectedRole.roleTemplateId && allRoleTemplates.some((template) => template.id === selectedRole.roleTemplateId)
+        ? selectedRole.roleTemplateId
+        : null;
+    setSelectedRoleTemplateId(nextTemplateId);
+  }, [allRoleTemplates, selectedRole?.id, selectedRole?.kind, selectedRole?.roleTemplateId]);
+
+  useEffect(() => {
+    if (selectedRoleTemplateId && !allRoleTemplates.some((template) => template.id === selectedRoleTemplateId)) {
+      setSelectedRoleTemplateId(null);
+    }
+  }, [allRoleTemplates, selectedRoleTemplateId]);
+
+  useEffect(() => {
+    if (!selectedRoleTemplateId) {
+      setRoleTemplateDraft(null);
+      setRoleTemplateDirty(false);
+      return;
+    }
+    const template = allRoleTemplates.find((item) => item.id === selectedRoleTemplateId) ?? null;
+    setRoleTemplateDraft(template ? structuredClone(template) : null);
+    setRoleTemplateDirty(false);
+  }, [allRoleTemplates, selectedRoleTemplateId]);
+
+  useEffect(() => {
     if (!selectedRoom) {
       setDraftRoom(null);
       setSelectedRoleId(null);
       setPendingReplyToMessageId(null);
       setExpandedMessageIds([]);
-      setAutoRunning(false);
+      setAutoPlayState("idle");
       lastHydratedRoomIdRef.current = null;
       return;
     }
@@ -981,7 +1194,7 @@ function App() {
     if (roomChanged) {
       setPendingReplyToMessageId(null);
       setExpandedMessageIds([]);
-      setAutoRunning(false);
+      setAutoPlayState("idle");
     }
     setSelectedRoleId((current) => {
       if (current && nextDraft.roles.some((role) => role.id === current)) {
@@ -1053,14 +1266,16 @@ function App() {
     setError("");
 
     try {
-      const [nextRooms, nextPresets, nextDirections] = await Promise.all([
+      const [nextRooms, nextPresets, nextDirections, nextRoleTemplates] = await Promise.all([
         api.listRooms(),
         api.listProviderPresets(),
         api.listResearchDirections(),
+        api.listRoleTemplates(),
       ]);
       setRooms(nextRooms);
       setPresets(nextPresets);
       setCustomResearchDirections(nextDirections);
+      setRoleTemplates(nextRoleTemplates);
 
       if (nextRooms.length === 0) {
         setSelectedRoomId(null);
@@ -1114,6 +1329,38 @@ function App() {
       return exists ? current.map((item) => (item.id === preset.id ? preset : item)) : [...current, preset];
     });
     setSelectedPresetId(preset.id);
+  }
+
+  function syncRoleTemplate(template: RoleTemplatePreset): void {
+    setRoleTemplates((current) => {
+      const exists = current.some((item) => item.id === template.id);
+      return exists ? current.map((item) => (item.id === template.id ? template : item)) : [...current, template];
+    });
+    setSelectedRoleTemplateId(template.id);
+    setTemplateLibraryKind(template.kind);
+  }
+
+  function getRoleTemplatePayload(template: Pick<RoleTemplatePreset, "name" | "kind" | "persona" | "principles" | "goal" | "voiceStyle" | "accentColor">): Partial<RoleTemplatePreset> {
+    return {
+      name: template.name.trim(),
+      kind: template.kind,
+      persona: template.persona,
+      principles: template.principles,
+      goal: template.goal,
+      voiceStyle: template.voiceStyle,
+      accentColor: template.accentColor,
+    };
+  }
+
+  function updateRoleTemplateDraft(updater: (template: RoleTemplatePreset) => RoleTemplatePreset): void {
+    setRoleTemplateDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      const next = updater(current);
+      setRoleTemplateDirty(true);
+      return next;
+    });
   }
 
   function syncResearchDirection(direction: ResearchDirectionPreset): void {
@@ -1185,7 +1432,7 @@ function App() {
     };
 
     if (options.stopAutoRunning) {
-      setAutoRunning(false);
+      setAutoPlayState("idle");
     }
 
     if (options.withTaskLabel) {
@@ -1232,7 +1479,7 @@ function App() {
     try {
       await stepDiscussion({ stopAutoRunning: false, withTaskLabel: false });
     } catch (nextError) {
-      setAutoRunning(false);
+      setAutoPlayState("idle");
       setError(getDisplayErrorMessage(nextError instanceof Error ? nextError.message : t(UI_COPY.autoPlayFailed)));
     } finally {
       autoRunBusyRef.current = false;
@@ -1252,12 +1499,22 @@ function App() {
   useEffect(() => {
     clearAutoRunTimer();
 
-    if (!autoRunning || !draftRoom) {
+    if (!draftRoom) {
       return;
     }
 
     if (draftRoom.state.status === "completed" || draftRoom.state.status === "stopped") {
-      setAutoRunning(false);
+      if (autoPlayState !== "idle") {
+        setAutoPlayState("idle");
+      }
+      return;
+    }
+
+    const shouldSchedule = shouldContinueAutoPlay(draftRoom, autoPlayState);
+    if (!shouldSchedule) {
+      if (autoPlayState === "pause-requested" && !busyLabel && !stepPending) {
+        setAutoPlayState("idle");
+      }
       return;
     }
 
@@ -1274,13 +1531,16 @@ function App() {
       clearAutoRunTimer();
     };
   }, [
-    autoRunning,
+    autoPlayState,
     busyLabel,
     stepPending,
     draftRoom?.id,
     draftRoom?.autoRunDelaySeconds,
     draftRoom?.state.status,
     draftRoom?.state.totalTurns,
+    draftRoom?.state.activeExchange?.hardTargetRoleId,
+    draftRoom?.state.activeExchange?.respondedRoleIds.join(","),
+    draftRoom?.state.pendingRequiredReplies.length,
     draftRoom?.updatedAt,
   ]);
 
@@ -1297,6 +1557,17 @@ function App() {
         ...current,
         roles: current.roles.map((role) => (role.id === roleId ? updater(role) : role)),
       };
+    });
+  }
+
+  function updateRoleTemplateAware(
+    roleId: string,
+    updater: (role: DiscussionRole) => DiscussionRole,
+    options: { clearTemplateBinding?: boolean } = {},
+  ): void {
+    updateRole(roleId, (role) => {
+      const nextRole = updater(role);
+      return options.clearTemplateBinding ? { ...nextRole, roleTemplateId: null } : nextRole;
     });
   }
 
@@ -1347,11 +1618,24 @@ function App() {
     };
   }
 
-  function applyRoleTemplate(roleId: string, templateKey: RoleTemplateKey): void {
+  function applyRoleTemplate(roleId: string, templateId: string): void {
+    if (templateId === CUSTOM_ROLE_TEMPLATE_ID) {
+      updateRole(roleId, (role) => ({ ...role, roleTemplateId: null }));
+      return;
+    }
+
+    const template = resolveRoleTemplate(templateId);
+    if (!template) {
+      return;
+    }
+
+    applyRoleTemplatePreset(roleId, template);
+  }
+
+  function applyRoleTemplatePreset(roleId: string, template: RoleTemplatePreset): void {
     updateRole(roleId, (role) =>
       createRoleFromTemplate({
-        templateKey,
-        locale,
+        template,
         id: role.id,
         enabled: role.enabled,
         providerPresetId: role.providerPresetId,
@@ -1362,12 +1646,166 @@ function App() {
 
   function createRoleDraft(kind: DiscussionRoleKind): DiscussionRole {
     const mockPresetId = presets.find((preset) => preset.provider.type === "mock")?.id ?? null;
-    const templateKey: RoleTemplateKey = kind === "recorder" ? "recorder" : "methodologist";
+    const template = getBuiltInRoleTemplatePreset(kind === "recorder" ? "recorder" : "methodologist", locale);
+    if (!template) {
+      throw new Error("Default role template could not be resolved.");
+    }
     return createRoleFromTemplate({
-      templateKey,
-      locale,
+      template,
       providerPresetId: mockPresetId,
       provider: createProviderDraft("mock"),
+    });
+  }
+
+  function createRoleTemplatePayloadFromRole(role: DiscussionRole): Partial<RoleTemplatePreset> {
+    return {
+      name: role.name.trim(),
+      kind: role.kind,
+      persona: role.persona,
+      principles: role.principles,
+      goal: role.goal,
+      voiceStyle: role.voiceStyle,
+      accentColor: role.accentColor,
+    };
+  }
+
+  async function handleCreateRoleTemplateFromScratch(): Promise<void> {
+    const defaultName =
+      templateLibraryKind === "recorder" ? templateCopy.createRecorderDefault : templateCopy.createParticipantDefault;
+    const name = window.prompt(templateCopy.templateNamePrompt, defaultName);
+    if (!name?.trim()) {
+      return;
+    }
+
+    const builtInTemplate = getBuiltInRoleTemplatePreset(
+      templateLibraryKind === "recorder" ? "recorder" : "methodologist",
+      locale,
+    );
+    if (!builtInTemplate) {
+      return;
+    }
+
+    await runTask(templateCopy.createTemplate, async () => {
+      const saved = await api.createRoleTemplate({
+        ...getRoleTemplatePayload(builtInTemplate),
+        name: name.trim(),
+      });
+      syncRoleTemplate(saved);
+      setRoleTemplatesCollapsed(false);
+    });
+  }
+
+  async function handleDuplicateRoleTemplate(): Promise<void> {
+    const sourceTemplate = displayedRoleTemplate ?? selectedRoleTemplate;
+    if (!sourceTemplate) {
+      return;
+    }
+
+    const fallbackName = `${sourceTemplate.name} Copy`;
+    const name = window.prompt(templateCopy.templateNamePrompt, fallbackName);
+    if (!name?.trim()) {
+      return;
+    }
+
+    await runTask(templateCopy.duplicateTemplate, async () => {
+      const saved = await api.createRoleTemplate({
+        ...getRoleTemplatePayload(sourceTemplate),
+        name: name.trim(),
+      });
+      syncRoleTemplate(saved);
+      setRoleTemplatesCollapsed(false);
+    });
+  }
+
+  async function saveRoleTemplateDraft(): Promise<RoleTemplatePreset | null> {
+    if (!selectedRoleTemplate || selectedRoleTemplate.builtIn || !roleTemplateDraft) {
+      return selectedRoleTemplate;
+    }
+    if (!roleTemplateDirty) {
+      return selectedRoleTemplate;
+    }
+
+    const saved = await api.updateRoleTemplate(selectedRoleTemplate.id, getRoleTemplatePayload(roleTemplateDraft));
+    syncRoleTemplate(saved);
+    return saved;
+  }
+
+  async function handleSaveRoleTemplate(): Promise<void> {
+    if (!selectedRoleTemplate || selectedRoleTemplate.builtIn) {
+      return;
+    }
+
+    await runTask(templateCopy.saveTemplate, async () => {
+      await saveRoleTemplateDraft();
+    });
+  }
+
+  async function handleDeleteRoleTemplate(): Promise<void> {
+    if (!selectedRoleTemplate || selectedRoleTemplate.builtIn) {
+      return;
+    }
+
+    if (!window.confirm(formatTemplate(locale, templateCopy.deleteConfirm, { name: selectedRoleTemplate.name }))) {
+      return;
+    }
+
+    await runTask(templateCopy.deleteTemplate, async () => {
+      const currentTemplates = activeRoleTemplates;
+      const currentIndex = currentTemplates.findIndex((template) => template.id === selectedRoleTemplate.id);
+      const remainingTemplates = currentTemplates.filter((template) => template.id !== selectedRoleTemplate.id);
+      const nextSelection =
+        remainingTemplates[currentIndex] ?? remainingTemplates[Math.max(0, currentIndex - 1)] ?? null;
+      await api.deleteRoleTemplate(selectedRoleTemplate.id);
+      setRoleTemplates((current) => current.filter((template) => template.id !== selectedRoleTemplate.id));
+      setSelectedRoleTemplateId(nextSelection?.id ?? null);
+      setRoleTemplateDraft(null);
+      setRoleTemplateDirty(false);
+      setDraftRoom((current) =>
+        current
+          ? {
+              ...current,
+              roles: current.roles.map((role) =>
+                role.roleTemplateId === selectedRoleTemplate.id ? { ...role, roleTemplateId: null } : role,
+              ),
+            }
+          : current,
+      );
+    });
+  }
+
+  async function handleSaveCurrentRoleAsTemplate(): Promise<void> {
+    if (!selectedRole) {
+      return;
+    }
+
+    const fallbackName = `${selectedRole.name} Template`;
+    const name = window.prompt(templateCopy.templateNamePrompt, fallbackName);
+    if (!name?.trim()) {
+      return;
+    }
+
+    await runTask(templateCopy.saveCurrentRoleTemplate, async () => {
+      const saved = await api.createRoleTemplate({
+        ...createRoleTemplatePayloadFromRole(selectedRole),
+        name: name.trim(),
+      });
+      syncRoleTemplate(saved);
+      updateRole(selectedRole.id, (role) => ({ ...role, roleTemplateId: saved.id }));
+      setRoleTemplatesCollapsed(false);
+    });
+  }
+
+  async function handleApplySelectedRoleTemplate(): Promise<void> {
+    if (!selectedRole || !selectedRoleTemplate || selectedRole.kind !== selectedRoleTemplate.kind) {
+      return;
+    }
+
+    await runTask(templateCopy.applyTemplate, async () => {
+      const templateToApply = roleTemplateDirty ? await saveRoleTemplateDraft() : selectedRoleTemplate;
+      if (!templateToApply) {
+        return;
+      }
+      applyRoleTemplatePreset(selectedRole.id, templateToApply);
     });
   }
 
@@ -1438,7 +1876,7 @@ function App() {
   }
 
   async function handleStartFresh(): Promise<void> {
-    setAutoRunning(false);
+    setAutoPlayState("idle");
     setPendingReplyToMessageId(null);
     await runTask(t(UI_COPY.startFresh), async () => {
       const saved = await persistDraft();
@@ -1452,7 +1890,9 @@ function App() {
   }
 
   function handleRun(): void {
-    setAutoRunning((current) => !current);
+    setAutoPlayState((current) =>
+      current === "idle" ? "running" : current === "running" ? "pause-requested" : "running",
+    );
   }
 
   async function handleStop(): Promise<void> {
@@ -1460,7 +1900,7 @@ function App() {
       return;
     }
 
-    setAutoRunning(false);
+    setAutoPlayState("idle");
     await runTask(t(UI_COPY.stop), async () => {
       const stopped = await api.stopRoom(draftRoom.id);
       syncRoom(stopped);
@@ -2315,7 +2755,7 @@ function App() {
               </div>
               <small>
                 {role.kind === "recorder" ? t(UI_COPY.recorderTag) : t(UI_COPY.participantTag)}
-                {role.roleTemplateKey ? ` · ${getRoleTemplateName(role.roleTemplateKey, locale)}` : ""}
+                {role.roleTemplateId ? ` · ${getRoleTemplateDisplayName(role.roleTemplateId)}` : ""}
               </small>
               <p className="role-pill-goal">{role.goal}</p>
             </article>
@@ -2367,7 +2807,7 @@ function App() {
                       onClick={handleRun}
                       disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
                     >
-                      {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
+                      {getAutoPlayButtonLabel()}
                     </button>
                     <button className="danger-button" onClick={() => void handleStop()} disabled={Boolean(busyLabel)}>
                       {t(UI_COPY.stop)}
@@ -2470,7 +2910,7 @@ function App() {
 
                 <div className="chat-status-rail">
                   {busyLabel ? <div className="busy-chip">{busyLabel}</div> : null}
-                  {autoRunning ? <div className="busy-chip auto-play-chip">{t(UI_COPY.autoPlayRunning)}</div> : null}
+                  {getAutoPlayStatusText() ? <div className="busy-chip auto-play-chip">{getAutoPlayStatusText()}</div> : null}
                   {draftRoom.state.activeExchange ? (
                     <div className="exchange-status-card">
                       <strong>{t(UI_COPY.exchangeStatusTitle)}</strong>
@@ -2655,7 +3095,7 @@ function App() {
                       onClick={handleRun}
                       disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
                     >
-                      {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
+                      {getAutoPlayButtonLabel()}
                     </button>
                     <button
                       className="danger-button subtle"
@@ -3101,18 +3541,25 @@ function App() {
                       {t(UI_COPY.roleNameLabel)}
                       <input
                         value={selectedRole.name}
-                        onChange={(event) => updateRole(selectedRole.id, (role) => ({ ...role, name: event.target.value }))}
+                        onChange={(event) =>
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, name: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
+                        }
                       />
                     </label>
                     <label>
                       {t(UI_COPY.roleTemplateLabel)}
                       <select
-                        value={selectedRole.roleTemplateKey ?? getAvailableRoleTemplates(selectedRole.kind)[0]}
-                        onChange={(event) => applyRoleTemplate(selectedRole.id, event.target.value as RoleTemplateKey)}
+                        value={getRoleTemplateSelectValue(selectedRole)}
+                        onChange={(event) => applyRoleTemplate(selectedRole.id, event.target.value)}
                       >
-                        {getAvailableRoleTemplates(selectedRole.kind).map((templateKey) => (
-                          <option key={templateKey} value={templateKey}>
-                            {getRoleTemplateName(templateKey, locale)}
+                        <option value={CUSTOM_ROLE_TEMPLATE_ID}>{templateCopy.customLabel}</option>
+                        {getAvailableRoleTemplates(selectedRole.kind, allRoleTemplates).map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
                           </option>
                         ))}
                       </select>
@@ -3123,7 +3570,11 @@ function App() {
                         type="color"
                         value={selectedRole.accentColor}
                         onChange={(event) =>
-                          updateRole(selectedRole.id, (role) => ({ ...role, accentColor: event.target.value }))
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, accentColor: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
                         }
                       />
                     </label>
@@ -3164,7 +3615,11 @@ function App() {
                         rows={3}
                         value={selectedRole.persona}
                         onChange={(event) =>
-                          updateRole(selectedRole.id, (role) => ({ ...role, persona: event.target.value }))
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, persona: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
                         }
                       />
                     </label>
@@ -3174,7 +3629,11 @@ function App() {
                         rows={3}
                         value={selectedRole.goal}
                         onChange={(event) =>
-                          updateRole(selectedRole.id, (role) => ({ ...role, goal: event.target.value }))
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, goal: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
                         }
                       />
                     </label>
@@ -3184,7 +3643,11 @@ function App() {
                         rows={3}
                         value={selectedRole.principles}
                         onChange={(event) =>
-                          updateRole(selectedRole.id, (role) => ({ ...role, principles: event.target.value }))
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, principles: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
                         }
                       />
                     </label>
@@ -3194,11 +3657,18 @@ function App() {
                         rows={2}
                         value={selectedRole.voiceStyle}
                         onChange={(event) =>
-                          updateRole(selectedRole.id, (role) => ({ ...role, voiceStyle: event.target.value }))
+                          updateRoleTemplateAware(
+                            selectedRole.id,
+                            (role) => ({ ...role, voiceStyle: event.target.value }),
+                            { clearTemplateBinding: true },
+                          )
                         }
                       />
                     </label>
                     <div className="inline-actions full-span">
+                      <button className="ghost-button" onClick={() => void handleSaveCurrentRoleAsTemplate()}>
+                        {templateCopy.saveCurrentRoleTemplate}
+                      </button>
                       <button className="ghost-button" onClick={() => void handleSaveCurrentProviderAsPreset()}>
                         {t(UI_COPY.saveCurrentProviderPreset)}
                       </button>
@@ -3231,6 +3701,171 @@ function App() {
               ) : (
                 <p className="muted">{t(UI_COPY.roleEditorEmpty)}</p>
               )}
+
+              <div className="editor-card top-gap template-library-panel">
+                <div className="panel-header tight">
+                  <div>
+                    <p className="eyebrow">{templateCopy.libraryEyebrow}</p>
+                    <h4>{templateCopy.libraryTitle}</h4>
+                    <p className="muted">
+                      {displayedRoleTemplate?.builtIn ? templateCopy.builtInHint : templateCopy.customHint}
+                    </p>
+                  </div>
+                  <div className="inline-actions">
+                    <button className="ghost-button" onClick={() => void handleCreateRoleTemplateFromScratch()}>
+                      {templateCopy.createTemplate}
+                    </button>
+                    <button className="ghost-button" onClick={() => void handleDuplicateRoleTemplate()} disabled={!selectedRoleTemplate}>
+                      {templateCopy.duplicateTemplate}
+                    </button>
+                    <button
+                      type="button"
+                      className="section-toggle"
+                      aria-expanded={!roleTemplatesCollapsed}
+                      onClick={() => setRoleTemplatesCollapsed((current) => !current)}
+                    >
+                      {roleTemplatesCollapsed ? templateCopy.expandLibrary : templateCopy.collapseLibrary}
+                    </button>
+                  </div>
+                </div>
+
+                {roleTemplatesCollapsed ? (
+                  <div className="template-library-summary">
+                    <span>{displayedRoleTemplate?.name ?? templateCopy.noTemplateSelected}</span>
+                    {roleTemplateDirty ? <small>{templateCopy.unsavedChanges}</small> : null}
+                  </div>
+                ) : (
+                  <>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className={templateLibraryKind === "participant" ? "primary-button" : "ghost-button"}
+                        onClick={() => setTemplateLibraryKind("participant")}
+                      >
+                        {templateCopy.participantKind}
+                      </button>
+                      <button
+                        type="button"
+                        className={templateLibraryKind === "recorder" ? "primary-button" : "ghost-button"}
+                        onClick={() => setTemplateLibraryKind("recorder")}
+                      >
+                        {templateCopy.recorderKind}
+                      </button>
+                    </div>
+
+                    {activeRoleTemplates.length > 0 ? (
+                      <div className="entity-list compact-entity-list top-gap">
+                        {activeRoleTemplates.map((template) => (
+                          <button
+                            key={template.id}
+                            className={`entity-chip ${template.id === selectedRoleTemplateId ? "selected" : ""}`}
+                            onClick={() => setSelectedRoleTemplateId(template.id)}
+                          >
+                            <span>{template.name}</span>
+                            <small>{template.builtIn ? t(UI_COPY.presetBuiltIn) : t(UI_COPY.presetCustom)}</small>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="muted small-text top-gap">{templateCopy.noTemplateSelected}</p>
+                    )}
+
+                    {displayedRoleTemplate ? (
+                      <div className="field-grid top-gap">
+                        <label>
+                          {templateCopy.templateName}
+                          <input
+                            value={displayedRoleTemplate.name}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, name: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <label>
+                          {templateCopy.kindLabel}
+                          <input
+                            value={displayedRoleTemplate.kind === "recorder" ? templateCopy.recorderKind : templateCopy.participantKind}
+                            disabled
+                          />
+                        </label>
+                        <label>
+                          {t(UI_COPY.accentColorLabel)}
+                          <input
+                            type="color"
+                            value={displayedRoleTemplate.accentColor}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, accentColor: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <label className="full-span">
+                          {t(UI_COPY.personaLabel)}
+                          <textarea
+                            rows={3}
+                            value={displayedRoleTemplate.persona}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, persona: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <label className="full-span">
+                          {t(UI_COPY.goalLabel)}
+                          <textarea
+                            rows={3}
+                            value={displayedRoleTemplate.goal}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, goal: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <label className="full-span">
+                          {t(UI_COPY.strategyLabel)}
+                          <textarea
+                            rows={3}
+                            value={displayedRoleTemplate.principles}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, principles: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <label className="full-span">
+                          {t(UI_COPY.voiceStyleLabel)}
+                          <textarea
+                            rows={2}
+                            value={displayedRoleTemplate.voiceStyle}
+                            onChange={(event) =>
+                              updateRoleTemplateDraft((template) => ({ ...template, voiceStyle: event.target.value }))
+                            }
+                            disabled={displayedRoleTemplate.builtIn}
+                          />
+                        </label>
+                        <div className="inline-actions full-span">
+                          {!displayedRoleTemplate.builtIn ? (
+                            <>
+                              <button className="ghost-button" onClick={() => void handleSaveRoleTemplate()} disabled={!roleTemplateDirty}>
+                                {templateCopy.saveTemplate}
+                              </button>
+                              <button className="danger-button subtle" onClick={() => void handleDeleteRoleTemplate()}>
+                                {templateCopy.deleteTemplate}
+                              </button>
+                            </>
+                          ) : null}
+                          {selectedRole && selectedRole.kind === displayedRoleTemplate.kind ? (
+                            <button className="primary-button" onClick={() => void handleApplySelectedRoleTemplate()}>
+                              {templateCopy.applyTemplate}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
             </section>
           ) : null}
 

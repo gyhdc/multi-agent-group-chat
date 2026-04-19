@@ -20,6 +20,7 @@ export const STORAGE_KEYS = {
   languageCollapsed: "magc-language-collapsed",
   documentCollapsed: "magc-document-collapsed",
   rolesCollapsed: "magc-roles-collapsed",
+  roleTemplatesCollapsed: "magc-role-templates-collapsed",
 } as const;
 
 export const UI_COPY = {

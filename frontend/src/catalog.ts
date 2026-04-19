@@ -7,6 +7,7 @@ import {
   ProviderType,
   ResearchDirectionKey,
   RoleTemplateKey,
+  RoleTemplatePreset,
   UiLocale,
 } from "./types";
 
@@ -263,6 +264,36 @@ export function getRoleTemplateName(templateKey: RoleTemplateKey, locale: UiLoca
   return ROLE_TEMPLATE_DEFINITIONS[templateKey].name[locale];
 }
 
+export function isBuiltInRoleTemplateId(templateId: string): templateId is RoleTemplateKey {
+  return Object.prototype.hasOwnProperty.call(ROLE_TEMPLATE_DEFINITIONS, templateId);
+}
+
+export function createBuiltInRoleTemplatePreset(templateId: RoleTemplateKey, locale: UiLocale): RoleTemplatePreset {
+  const template = ROLE_TEMPLATE_DEFINITIONS[templateId];
+  const now = "";
+  return {
+    id: templateId,
+    name: template.name[locale],
+    kind: template.kind,
+    persona: template.persona[locale],
+    principles: template.principles[locale],
+    goal: template.goal[locale],
+    voiceStyle: template.voiceStyle[locale],
+    accentColor: template.accentColor,
+    builtIn: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function getBuiltInRoleTemplatePresets(locale: UiLocale): RoleTemplatePreset[] {
+  return ROLE_TEMPLATE_ORDER.map((templateId) => createBuiltInRoleTemplatePreset(templateId, locale));
+}
+
+export function getBuiltInRoleTemplatePreset(templateId: string, locale: UiLocale): RoleTemplatePreset | null {
+  return isBuiltInRoleTemplateId(templateId) ? createBuiltInRoleTemplatePreset(templateId, locale) : null;
+}
+
 export function getResearchDirectionLabel(direction: ResearchDirectionKey, locale: UiLocale): string {
   return RESEARCH_DIRECTION_DEFINITIONS[direction as keyof typeof RESEARCH_DIRECTION_DEFINITIONS]?.label[locale] ?? direction;
 }
@@ -276,33 +307,31 @@ export function isBuiltInResearchDirection(direction: ResearchDirectionKey): boo
 }
 
 export function createRoleFromTemplate(options: {
-  templateKey: RoleTemplateKey;
-  locale: UiLocale;
+  template: RoleTemplatePreset;
   providerPresetId?: string | null;
   provider?: ProviderConfig;
   id?: string;
   enabled?: boolean;
 }): DiscussionRole {
-  const template = ROLE_TEMPLATE_DEFINITIONS[options.templateKey];
   const provider = options.provider ? structuredClone(options.provider) : createProviderDraft("mock");
   return {
     id: options.id ?? crypto.randomUUID(),
-    name: template.name[options.locale],
-    kind: template.kind,
-    roleTemplateKey: options.templateKey,
-    persona: template.persona[options.locale],
-    principles: template.principles[options.locale],
-    voiceStyle: template.voiceStyle[options.locale],
-    goal: template.goal[options.locale],
-    accentColor: template.accentColor,
+    name: options.template.name,
+    kind: options.template.kind,
+    roleTemplateId: options.template.id,
+    persona: options.template.persona,
+    principles: options.template.principles,
+    voiceStyle: options.template.voiceStyle,
+    goal: options.template.goal,
+    accentColor: options.template.accentColor,
     enabled: options.enabled ?? true,
     providerPresetId: options.providerPresetId ?? null,
     provider,
   };
 }
 
-export function getAvailableRoleTemplates(kind: DiscussionRoleKind): RoleTemplateKey[] {
-  return ROLE_TEMPLATE_ORDER.filter((templateKey) => ROLE_TEMPLATE_DEFINITIONS[templateKey].kind === kind);
+export function getAvailableRoleTemplates(kind: DiscussionRoleKind, roleTemplates: RoleTemplatePreset[]): RoleTemplatePreset[] {
+  return roleTemplates.filter((template) => template.kind === kind);
 }
 
 export function createLocalizedRoomSeed(locale: UiLocale, mockPresetId?: string | null): Partial<DiscussionRoom> {
@@ -326,20 +355,17 @@ export function createLocalizedRoomSeed(locale: UiLocale, mockPresetId?: string 
     autoRunDelaySeconds: 2,
     roles: [
       createRoleFromTemplate({
-        templateKey: "reviewer",
-        locale,
+        template: createBuiltInRoleTemplatePreset("reviewer", locale),
         providerPresetId,
         provider,
       }),
       createRoleFromTemplate({
-        templateKey: "advisor",
-        locale,
+        template: createBuiltInRoleTemplatePreset("advisor", locale),
         providerPresetId,
         provider,
       }),
       createRoleFromTemplate({
-        templateKey: "recorder",
-        locale,
+        template: createBuiltInRoleTemplatePreset("recorder", locale),
         providerPresetId,
         provider,
       }),

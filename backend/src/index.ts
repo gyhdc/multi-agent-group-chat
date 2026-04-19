@@ -22,20 +22,24 @@ import {
 import { generateRecorderTopic } from "./providers";
 import {
   deleteResearchDirection,
+  deleteRoleTemplate,
   deleteProviderPreset,
   deleteRoom,
   ensureStorage,
   getResearchDirection,
+  getRoleTemplate,
   getProviderPreset,
   getRoom,
   listResearchDirections,
+  listRoleTemplates,
   listProviderPresets,
   saveResearchDirection,
+  saveRoleTemplate,
   listRooms,
   saveProviderPreset,
   saveRoom,
 } from "./store";
-import { DiscussionRole, DiscussionRoom, ProviderPreset, ResearchDirectionPreset } from "./types";
+import { DiscussionRole, DiscussionRoom, ProviderPreset, ResearchDirectionPreset, RoleTemplatePreset } from "./types";
 
 const app = express();
 const port = Number(process.env.PORT || 3030);
@@ -389,6 +393,57 @@ app.delete("/api/research-directions/:directionId", async (req, res) => {
   const removed = await deleteResearchDirection(req.params.directionId);
   if (!removed) {
     res.status(404).json({ error: "Research direction not found." });
+    return;
+  }
+  res.status(204).send();
+});
+
+app.get("/api/role-templates", async (_req, res) => {
+  res.json(await listRoleTemplates());
+});
+
+app.post("/api/role-templates", async (req, res) => {
+  const incoming = req.body as Partial<RoleTemplatePreset>;
+  const template = {
+    name: incoming.name,
+    kind: incoming.kind,
+    persona: incoming.persona,
+    principles: incoming.principles,
+    goal: incoming.goal,
+    voiceStyle: incoming.voiceStyle,
+    accentColor: incoming.accentColor,
+    builtIn: false,
+  } as RoleTemplatePreset;
+  const saved = await saveRoleTemplate(template);
+  res.status(201).json(saved);
+});
+
+app.put("/api/role-templates/:templateId", async (req, res) => {
+  const existing = await getRoleTemplate(req.params.templateId);
+  if (!existing) {
+    res.status(404).json({ error: "Role template not found." });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(400).json({ error: "Built-in role templates are read-only. Duplicate one if you want to customize it." });
+    return;
+  }
+
+  const saved = await saveRoleTemplate({
+    ...existing,
+    ...(req.body as Partial<RoleTemplatePreset>),
+    id: existing.id,
+    kind: existing.kind,
+    builtIn: false,
+    createdAt: existing.createdAt,
+  });
+  res.json(saved);
+});
+
+app.delete("/api/role-templates/:templateId", async (req, res) => {
+  const removed = await deleteRoleTemplate(req.params.templateId);
+  if (!removed) {
+    res.status(400).json({ error: "Role template not found or cannot be deleted." });
     return;
   }
   res.status(204).send();

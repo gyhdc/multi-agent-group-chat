@@ -15,6 +15,7 @@ export type RoleTemplateKey =
   | "statistician"
   | "industry-skeptic"
   | "recorder";
+export type DiscussionRoleKind = "participant" | "recorder";
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -45,6 +46,20 @@ export interface ResearchDirectionPreset {
   id: string;
   label: string;
   description: string;
+  builtIn: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoleTemplatePreset {
+  id: string;
+  name: string;
+  kind: DiscussionRoleKind;
+  persona: string;
+  principles: string;
+  goal: string;
+  voiceStyle: string;
+  accentColor: string;
   builtIn: boolean;
   createdAt: string;
   updatedAt: string;
@@ -101,7 +116,6 @@ export interface DocumentParseResult {
   defaultSelectedSegmentIds: string[];
 }
 
-export type DiscussionRoleKind = "participant" | "recorder";
 export type RoomStatus = "idle" | "running" | "stopped" | "completed";
 export type DiscussionPhase = "participants" | "recorder" | "final";
 export type MessageKind = "participant" | "recorder" | "user" | "system";
@@ -123,7 +137,7 @@ export interface DiscussionRole {
   id: string;
   name: string;
   kind: DiscussionRoleKind;
-  roleTemplateKey: RoleTemplateKey | null;
+  roleTemplateId: string | null;
   persona: string;
   principles: string;
   voiceStyle: string;

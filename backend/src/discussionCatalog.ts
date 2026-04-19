@@ -1,4 +1,4 @@
-import { DiscussionRoleKind, ResearchDirectionKey, RoleTemplateKey } from "./types";
+import { DiscussionRoleKind, ResearchDirectionKey, RoleTemplateKey, RoleTemplatePreset } from "./types";
 
 export const BUILTIN_RESEARCH_DIRECTION_ORDER = [
   "general",
@@ -40,6 +40,17 @@ export interface RoleTemplateProfile {
   evidenceFocus: string;
   nonNegotiable: string;
 }
+
+export const BUILTIN_ROLE_TEMPLATE_ORDER: RoleTemplateKey[] = [
+  "reviewer",
+  "advisor",
+  "methodologist",
+  "domain-expert",
+  "experimentalist",
+  "statistician",
+  "industry-skeptic",
+  "recorder",
+];
 
 export const RESEARCH_PROFILES: Record<BuiltInResearchDirectionKey, ResearchProfile> = {
   general: {
@@ -278,8 +289,8 @@ export function getResearchProfile(key: ResearchDirectionKey): ResearchProfile {
   return RESEARCH_PROFILES[key as BuiltInResearchDirectionKey] ?? RESEARCH_PROFILES.general;
 }
 
-export function getRoleTemplateProfile(key: RoleTemplateKey | null): RoleTemplateProfile | null {
-  return key ? ROLE_TEMPLATE_PROFILES[key] ?? null : null;
+export function getRoleTemplateProfile(id: string | null): RoleTemplateProfile | null {
+  return id && id in ROLE_TEMPLATE_PROFILES ? ROLE_TEMPLATE_PROFILES[id as RoleTemplateKey] ?? null : null;
 }
 
 export function inferRoleTemplateKey(name: string, kind: DiscussionRoleKind): RoleTemplateKey | null {
@@ -294,4 +305,24 @@ export function inferRoleTemplateKey(name: string, kind: DiscussionRoleKind): Ro
   }
 
   return null;
+}
+
+export function createBuiltInRoleTemplatePresets(): RoleTemplatePreset[] {
+  const now = new Date().toISOString();
+  return BUILTIN_ROLE_TEMPLATE_ORDER.map((templateId) => {
+    const profile = ROLE_TEMPLATE_PROFILES[templateId];
+    return {
+      id: templateId,
+      name: profile.defaultName,
+      kind: profile.kind,
+      persona: profile.persona,
+      principles: profile.principles,
+      goal: profile.goal,
+      voiceStyle: profile.voiceStyle,
+      accentColor: profile.accentColor,
+      builtIn: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
 }

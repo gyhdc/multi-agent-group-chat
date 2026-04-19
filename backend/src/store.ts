@@ -10,12 +10,14 @@ import {
   normalizePreset,
   normalizeRole,
 } from "./defaults";
+import { createBuiltInRoleTemplatePresets } from "./discussionCatalog";
 import {
   ActiveExchange,
   ChatMessage,
   DocumentOutlineNode,
   DocumentSegment,
   DocumentSummary,
+  DiscussionRole,
   DiscussionRoom,
   DiscussionState,
   DiscussionSummary,
@@ -24,6 +26,8 @@ import {
   PendingRequiredReply,
   ProviderPreset,
   ResearchDirectionPreset,
+  RoleTemplateKey,
+  RoleTemplatePreset,
   RoomDocumentAsset,
 } from "./types";
 
@@ -35,6 +39,7 @@ const settingsFile = path.join(dataDir, "settings.json");
 interface AppSettings {
   lastOpenedRoomId: string | null;
   researchDirections: ResearchDirectionPreset[];
+  roleTemplates: RoleTemplatePreset[];
 }
 
 async function ensureFile(filePath: string, initialContent: string): Promise<void> {
@@ -246,6 +251,23 @@ function normalizeResearchDirection(input: Partial<ResearchDirectionPreset>): Re
   };
 }
 
+function normalizeRoleTemplatePreset(input: Partial<RoleTemplatePreset>): RoleTemplatePreset {
+  const now = new Date().toISOString();
+  return {
+    id: input.id ?? randomUUID(),
+    name: input.name?.trim() || "Custom Role Template",
+    kind: input.kind === "recorder" ? "recorder" : "participant",
+    persona: input.persona?.trim() || "",
+    principles: input.principles?.trim() || "",
+    goal: input.goal?.trim() || "",
+    voiceStyle: input.voiceStyle?.trim() || "",
+    accentColor: input.accentColor?.trim() || "#49617a",
+    builtIn: Boolean(input.builtIn),
+    createdAt: input.createdAt?.trim() || now,
+    updatedAt: now,
+  };
+}
+
 function normalizeSummary(input: unknown): DiscussionSummary {
   const fallback = createSummary();
   const raw = (input ?? {}) as {
@@ -380,7 +402,17 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
   };
 }
 
-function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
+function sanitizeRoleTemplateId(
+  role: DiscussionRole,
+  validRoleTemplateIds?: ReadonlySet<string>,
+): DiscussionRole {
+  if (!validRoleTemplateIds || !role.roleTemplateId) {
+    return role;
+  }
+  return validRoleTemplateIds.has(role.roleTemplateId) ? role : { ...role, roleTemplateId: null };
+}
+
+function normalizeRoom(input: Partial<DiscussionRoom>, validRoleTemplateIds?: ReadonlySet<string>): DiscussionRoom {
   const base = createBlankRoom();
   const legacyInput = input as Partial<DiscussionRoom> & { checkpointIntervalExchanges?: number };
   const createdAt = input.createdAt ?? base.createdAt;
@@ -401,7 +433,9 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
       )
     : base.selectedDocumentSegmentIds;
 
-  const normalizedRoles = Array.isArray(input.roles) ? input.roles.map((role) => normalizeRole(role)) : base.roles;
+  const normalizedRoles = Array.isArray(input.roles)
+    ? input.roles.map((role) => sanitizeRoleTemplateId(normalizeRole(role as Partial<DiscussionRoom["roles"][number]> & { roleTemplateKey?: RoleTemplateKey | null }), validRoleTemplateIds))
+    : base.roles.map((role) => sanitizeRoleTemplateId(role, validRoleTemplateIds));
   const normalizedState = normalizeState(input.state, base.state);
   const enabledParticipantIds = normalizedRoles
     .filter((role) => role.enabled && role.kind === "participant")
@@ -497,12 +531,16 @@ async function readSettings(): Promise<AppSettings> {
   const fallback: AppSettings = {
     lastOpenedRoomId: null,
     researchDirections: [],
+    roleTemplates: [],
   };
   const parsed = await readJsonFile<Partial<AppSettings>>(settingsFile, fallback);
   return {
     lastOpenedRoomId: typeof parsed.lastOpenedRoomId === "string" ? parsed.lastOpenedRoomId : null,
     researchDirections: Array.isArray(parsed.researchDirections)
       ? parsed.researchDirections.map((item) => normalizeResearchDirection(item))
+      : [],
+    roleTemplates: Array.isArray(parsed.roleTemplates)
+      ? parsed.roleTemplates.map((item) => normalizeRoleTemplatePreset({ ...item, builtIn: false }))
       : [],
   };
 }
@@ -511,11 +549,19 @@ async function writeSettings(settings: AppSettings): Promise<void> {
   await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf-8");
 }
 
+async function getValidRoleTemplateIds(): Promise<Set<string>> {
+  const settings = await readSettings();
+  return new Set([
+    ...createBuiltInRoleTemplatePresets().map((template) => template.id),
+    ...settings.roleTemplates.map((template) => template.id),
+  ]);
+}
+
 export async function ensureStorage(): Promise<void> {
   await fs.mkdir(dataDir, { recursive: true });
   await ensureFile(roomsFile, "[]");
   await ensureFile(presetsFile, "[]");
-  await ensureFile(settingsFile, JSON.stringify({ lastOpenedRoomId: null, researchDirections: [] }, null, 2));
+  await ensureFile(settingsFile, JSON.stringify({ lastOpenedRoomId: null, researchDirections: [], roleTemplates: [] }, null, 2));
 
   const existingRooms = await listRooms();
   if (existingRooms.length === 0) {
@@ -530,7 +576,8 @@ export async function ensureStorage(): Promise<void> {
 
 export async function readRooms(): Promise<DiscussionRoom[]> {
   const parsed = await readJsonFile<Partial<DiscussionRoom>[]>(roomsFile, []);
-  return Array.isArray(parsed) ? parsed.map((room) => normalizeRoom(room)) : [];
+  const validRoleTemplateIds = await getValidRoleTemplateIds();
+  return Array.isArray(parsed) ? parsed.map((room) => normalizeRoom(room, validRoleTemplateIds)) : [];
 }
 
 export async function writeRooms(rooms: DiscussionRoom[]): Promise<void> {
@@ -548,7 +595,8 @@ export async function getRoom(roomId: string): Promise<DiscussionRoom | undefine
 
 export async function saveRoom(room: DiscussionRoom): Promise<DiscussionRoom> {
   const rooms = await readRooms();
-  const normalized = normalizeRoom(room);
+  const validRoleTemplateIds = await getValidRoleTemplateIds();
+  const normalized = normalizeRoom(room, validRoleTemplateIds);
   const index = rooms.findIndex((item) => item.id === normalized.id);
 
   if (index >= 0) {
@@ -621,6 +669,43 @@ export async function deleteProviderPreset(presetId: string): Promise<boolean> {
 export async function listResearchDirections(): Promise<ResearchDirectionPreset[]> {
   const settings = await readSettings();
   return settings.researchDirections;
+}
+
+export async function listRoleTemplates(): Promise<RoleTemplatePreset[]> {
+  const settings = await readSettings();
+  return [...createBuiltInRoleTemplatePresets(), ...settings.roleTemplates];
+}
+
+export async function getRoleTemplate(templateId: string): Promise<RoleTemplatePreset | undefined> {
+  const templates = await listRoleTemplates();
+  return templates.find((template) => template.id === templateId);
+}
+
+export async function saveRoleTemplate(template: RoleTemplatePreset): Promise<RoleTemplatePreset> {
+  const settings = await readSettings();
+  const normalized = normalizeRoleTemplatePreset({ ...template, builtIn: false });
+  const index = settings.roleTemplates.findIndex((item) => item.id === normalized.id);
+
+  if (index >= 0) {
+    settings.roleTemplates[index] = normalized;
+  } else {
+    settings.roleTemplates.push(normalized);
+  }
+
+  await writeSettings(settings);
+  return normalized;
+}
+
+export async function deleteRoleTemplate(templateId: string): Promise<boolean> {
+  const settings = await readSettings();
+  const nextTemplates = settings.roleTemplates.filter((template) => template.id !== templateId);
+  if (nextTemplates.length === settings.roleTemplates.length) {
+    return false;
+  }
+
+  settings.roleTemplates = nextTemplates;
+  await writeSettings(settings);
+  return true;
 }
 
 export async function getResearchDirection(directionId: string): Promise<ResearchDirectionPreset | undefined> {
