@@ -71,6 +71,10 @@ function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>):
         : existing.maxRounds,
     checkpointEveryRound:
       typeof incoming.checkpointEveryRound === "boolean" ? incoming.checkpointEveryRound : existing.checkpointEveryRound,
+    checkpointIntervalExchanges:
+      typeof incoming.checkpointIntervalExchanges === "number" && Number.isFinite(incoming.checkpointIntervalExchanges)
+        ? Math.max(0, Math.min(12, Math.floor(incoming.checkpointIntervalExchanges)))
+        : existing.checkpointIntervalExchanges,
     roles: incoming.roles ? normalizeRoles(incoming.roles) : existing.roles,
     updatedAt: new Date().toISOString(),
   };

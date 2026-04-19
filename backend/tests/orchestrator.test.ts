@@ -53,6 +53,7 @@ function createRoom(options: {
 
   room.roles = options.includeRecorder === false ? participants : [...participants, createRecorder(baseProvider)];
   room.checkpointEveryRound = options.checkpointEveryRound ?? true;
+  room.checkpointIntervalExchanges = room.checkpointEveryRound ? 1 : 0;
   room.maxRounds = options.maxRounds ?? 3;
   return room;
 }
@@ -288,6 +289,71 @@ test("checkpoint and final happen only after the current exchange naturally sett
     const finalMessage = room.messages.at(-1);
     assert.ok(finalMessage);
     assert.equal(finalMessage.kind, "recorder");
+    assert.equal(room.state.status, "completed");
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("checkpoint interval of two exchanges delays recorder notes until every second settled exchange", async () => {
+  const room = createRoom({
+    providerType: "custom-http",
+    includeRecorder: true,
+    checkpointEveryRound: true,
+    maxRounds: 2,
+  });
+  room.checkpointIntervalExchanges = 2;
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor answer.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Reviewer second exchange opening.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor second exchange answer.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Recorder checkpoint.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Recorder final.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 0);
+
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("checkpoint interval zero disables mid-discussion notes but still produces final conclusion", async () => {
+  const room = createRoom({
+    providerType: "custom-http",
+    includeRecorder: true,
+    checkpointEveryRound: false,
+    maxRounds: 1,
+  });
+  room.checkpointIntervalExchanges = 0;
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor answer.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Recorder final.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 0);
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "final").length, 1);
     assert.equal(room.state.status, "completed");
   } finally {
     restoreFetch();

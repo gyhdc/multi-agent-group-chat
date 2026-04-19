@@ -184,6 +184,8 @@ function normalizeActiveExchange(input: Partial<ActiveExchange> | null | undefin
 
   return {
     id: input.id,
+    sequenceNumber:
+      typeof input.sequenceNumber === "number" && Number.isFinite(input.sequenceNumber) ? Math.max(1, input.sequenceNumber) : 1,
     reason:
       input.reason === "user-message" || input.reason === "participant-forced-reply" ? input.reason : "topic-start",
     triggerMessageId: typeof input.triggerMessageId === "string" ? input.triggerMessageId : null,
@@ -276,6 +278,7 @@ function normalizeSummary(input: unknown): DiscussionSummary {
 }
 
 function normalizeState(input: Partial<DiscussionState> | undefined, fallback: DiscussionState): DiscussionState {
+  const activeExchange = normalizeActiveExchange(input?.activeExchange);
   const spokenParticipantRoleIds = Array.isArray(input?.spokenParticipantRoleIds)
     ? input.spokenParticipantRoleIds.filter((roleId): roleId is string => typeof roleId === "string" && roleId.trim().length > 0)
     : fallback.spokenParticipantRoleIds;
@@ -288,6 +291,19 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
   return {
     ...fallback,
     ...(input ?? {}),
+    currentRound:
+      activeExchange?.sequenceNumber ??
+      (typeof input?.currentRound === "number" && Number.isFinite(input.currentRound) ? Math.max(0, input.currentRound) : fallback.currentRound),
+    completedExchangeCount:
+      typeof input?.completedExchangeCount === "number" && Number.isFinite(input.completedExchangeCount)
+        ? Math.max(0, Math.floor(input.completedExchangeCount))
+        : typeof input?.currentRound === "number" && Number.isFinite(input.currentRound) && !activeExchange
+          ? Math.max(0, Math.floor(input.currentRound))
+        : fallback.completedExchangeCount,
+    lastCheckpointedExchangeCount:
+      typeof input?.lastCheckpointedExchangeCount === "number" && Number.isFinite(input.lastCheckpointedExchangeCount)
+        ? Math.max(0, Math.floor(input.lastCheckpointedExchangeCount))
+        : fallback.lastCheckpointedExchangeCount,
     nextSpeakerIndex:
       typeof input?.nextSpeakerIndex === "number" && Number.isFinite(input.nextSpeakerIndex)
         ? input.nextSpeakerIndex
@@ -297,7 +313,7 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
     lastActiveRoleId: typeof input?.lastActiveRoleId === "string" ? input.lastActiveRoleId : fallback.lastActiveRoleId,
     spokenParticipantRoleIds,
     pendingRequiredReplies,
-    activeExchange: normalizeActiveExchange(input?.activeExchange),
+    activeExchange,
   };
 }
 
@@ -343,6 +359,14 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
         : base.maxRounds,
     checkpointEveryRound:
       typeof input.checkpointEveryRound === "boolean" ? input.checkpointEveryRound : base.checkpointEveryRound,
+    checkpointIntervalExchanges:
+      typeof input.checkpointIntervalExchanges === "number" && Number.isFinite(input.checkpointIntervalExchanges)
+        ? Math.max(0, Math.min(12, Math.floor(input.checkpointIntervalExchanges)))
+        : typeof input.checkpointEveryRound === "boolean"
+          ? input.checkpointEveryRound
+            ? 1
+            : 0
+          : base.checkpointIntervalExchanges,
     documentAsset: normalizedDocumentAsset,
     documentSegments: normalizedDocumentSegments,
     documentOutline: normalizedDocumentOutline,

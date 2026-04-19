@@ -259,7 +259,9 @@ export const UI_COPY = {
   roomSectionDirection: text("方向", "Direction"),
   roomSectionLanguage: text("语言", "Language"),
   chatTurns: text("消息", "Messages"),
-  activeRound: text("当前轮次", "Current Round"),
+  activeRound: text("当前阶段", "Current Exchange"),
+  checkpointIntervalLabel: text("纪要间隔（阶段）", "Checkpoint Interval (Exchanges)"),
+  checkpointIntervalHint: text("0 表示关闭中途纪要，只保留最终结论。", "Use 0 to disable mid-discussion checkpoints and keep only the final conclusion."),
   messageMeta: text("第 {round} 轮 · 第 {turn} 条 · {time}", "Round {round} · Turn {turn} · {time}"),
   insightMeta: text("第 {round} 轮 · {time}", "Round {round} · {time}"),
   noteHeadingTopic: text("议题", "Topic"),
@@ -382,6 +384,14 @@ export function localizeKnownError(locale: UiLocale, message: string): string {
     case "Recorder provider is unavailable for AI topic generation.":
       return text("记录员 provider 当前不可用于 AI Topic 生成。", "Recorder provider is unavailable for AI topic generation.")[locale];
     default:
+      if (message.startsWith("The working directory does not exist:")) {
+        return locale === "zh-CN" ? `工作目录不存在：${message.slice("The working directory does not exist:".length).trim()}` : message;
+      }
+      if (message === "The local CLI could not be spawned on Windows. Use a real executable or `.cmd` launcher such as `D:\\nodejs\\npx.cmd`, and make sure the working directory exists.") {
+        return locale === "zh-CN"
+          ? "Windows 下无法启动本地 CLI。请使用真实可执行文件或 `.cmd` 启动器（例如 `D:\\nodejs\\npx.cmd`），并确认工作目录存在。"
+          : message;
+      }
       if (message.startsWith("Request failed:")) {
         return locale === "zh-CN" ? `请求失败：${message.slice("Request failed:".length).trim()}` : message;
       }

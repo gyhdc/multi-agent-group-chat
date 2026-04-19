@@ -150,6 +150,7 @@ export interface PendingRequiredReply {
 
 export interface ActiveExchange {
   id: string;
+  sequenceNumber: number;
   reason: ActiveExchangeReason;
   triggerMessageId: string | null;
   hardTargetRoleId: string | null;
@@ -177,6 +178,8 @@ export interface DiscussionState {
   status: RoomStatus;
   phase: DiscussionPhase;
   currentRound: number;
+  completedExchangeCount: number;
+  lastCheckpointedExchangeCount: number;
   nextSpeakerIndex: number;
   totalTurns: number;
   lastActiveRoleId: string | null;
@@ -198,6 +201,7 @@ export interface DiscussionRoom {
   autoRunDelaySeconds: number;
   maxRounds: number;
   checkpointEveryRound: boolean;
+  checkpointIntervalExchanges: number;
   documentAsset: RoomDocumentAsset | null;
   documentSegments: DocumentSegment[];
   documentOutline: DocumentOutlineNode[];

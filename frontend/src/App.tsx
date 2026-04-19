@@ -198,7 +198,7 @@ function App() {
   const [selectedCustomResearchDirectionId, setSelectedCustomResearchDirectionId] = useState<string | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
   const autoRunBusyRef = useRef(false);
-  const chatStreamRef = useRef<HTMLDivElement | null>(null);
+  const chatTimelineRef = useRef<HTMLDivElement | null>(null);
   const lastHydratedRoomIdRef = useRef<string | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -320,6 +320,10 @@ function App() {
       draftRoom?.state.activeExchange?.respondedRoleIds
         .map((roleId) => draftRoom.roles.find((role) => role.id === roleId)?.name)
         .filter((name): name is string => Boolean(name)) ?? [],
+    [draftRoom],
+  );
+  const displayedExchangeNumber = useMemo(
+    () => draftRoom?.state.activeExchange?.sequenceNumber ?? draftRoom?.state.completedExchangeCount ?? 0,
     [draftRoom],
   );
 
@@ -526,10 +530,10 @@ function App() {
   }, [draftRoom, customResearchDirections, locale]);
 
   useEffect(() => {
-    if (!chatStreamRef.current) {
+    if (!chatTimelineRef.current) {
       return;
     }
-    chatStreamRef.current.scrollTop = chatStreamRef.current.scrollHeight;
+    chatTimelineRef.current.scrollTop = chatTimelineRef.current.scrollHeight;
   }, [draftRoom?.messages.length]);
 
   useEffect(() => {
@@ -703,13 +707,16 @@ function App() {
     };
   }, [
     autoRunning,
-    draftRoom,
     draftRoom?.id,
     draftRoom?.autoRunDelaySeconds,
     draftRoom?.state.status,
     draftRoom?.state.phase,
-    draftRoom?.state.currentRound,
-    draftRoom?.state.totalTurns,
+    draftRoom?.state.activeExchange?.id,
+    draftRoom?.state.activeExchange?.sequenceNumber,
+    draftRoom?.state.activeExchange?.reason,
+    draftRoom?.state.activeExchange?.hardTargetRoleId,
+    draftRoom?.state.pendingRequiredReplies.length,
+    draftRoom?.summary.updatedAt,
   ]);
 
   function updateRoomField<K extends keyof DiscussionRoom>(field: K, value: DiscussionRoom[K]): void {
@@ -1680,140 +1687,146 @@ function App() {
         <section className={`chat-layout ${insightPanelCollapsed ? "insight-collapsed" : ""}`}>
           <div className="chat-column">
             <section className="chat-panel">
-              <div className="chat-panel-header">
-                <div>
-                  <p className="eyebrow">{t(UI_COPY.roomSectionTopic)}</p>
-                  <h3>{draftRoom.title}</h3>
-                  <div className="chat-stats">
-                    <span>{t(UI_COPY.participantCount)}: {participantCount}</span>
-                    <span>{t(UI_COPY.roundsLabel)}: {draftRoom.maxRounds}</span>
-                    <span>{t(UI_COPY.activeRound)}: {draftRoom.state.currentRound}</span>
-                    <span>{t(UI_COPY.chatTurns)}: {draftRoom.messages.length}</span>
-                    <span>{t(UI_COPY.autoRunDelayLabel)}: {draftRoom.autoRunDelaySeconds}s</span>
+              <div className="chat-panel-top">
+                <div className="chat-panel-header">
+                  <div>
+                    <p className="eyebrow">{t(UI_COPY.roomSectionTopic)}</p>
+                    <h3>{draftRoom.title}</h3>
+                    <div className="chat-stats">
+                      <span>{t(UI_COPY.participantCount)}: {participantCount}</span>
+                      <span>{t(UI_COPY.roundsLabel)}: {draftRoom.maxRounds}</span>
+                      <span>{t(UI_COPY.activeRound)}: {displayedExchangeNumber}</span>
+                      <span>{t(UI_COPY.chatTurns)}: {draftRoom.messages.length}</span>
+                      <span>{t(UI_COPY.autoRunDelayLabel)}: {draftRoom.autoRunDelaySeconds}s</span>
+                    </div>
                   </div>
-                </div>
-                <div className="inline-actions">
-                  <button
-                    className="ghost-button"
-                    data-testid="start-fresh-button"
-                    onClick={() => void handleStartFresh()}
-                    disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
-                  >
-                    {t(UI_COPY.startFresh)}
-                  </button>
-                  <button
-                    className="ghost-button"
-                    data-testid="step-button"
-                    onClick={() => void handleStep()}
-                    disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
-                  >
-                    {t(UI_COPY.step)}
-                  </button>
-                  <button
-                    className="primary-button"
-                    data-testid="run-all-button"
-                    onClick={handleRun}
-                    disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
-                  >
-                    {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
-                  </button>
-                  <button className="danger-button" onClick={() => void handleStop()} disabled={Boolean(busyLabel)}>
-                    {t(UI_COPY.stop)}
-                  </button>
+                  <div className="inline-actions">
+                    <button
+                      className="ghost-button"
+                      data-testid="start-fresh-button"
+                      onClick={() => void handleStartFresh()}
+                      disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
+                    >
+                      {t(UI_COPY.startFresh)}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      data-testid="step-button"
+                      onClick={() => void handleStep()}
+                      disabled={Boolean(busyLabel) || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
+                    >
+                      {t(UI_COPY.step)}
+                    </button>
+                    <button
+                      className="primary-button"
+                      data-testid="run-all-button"
+                      onClick={handleRun}
+                      disabled={Boolean(busyLabel) || autoRunBusyRef.current || (!canStartDocumentDiscussion && draftRoom.state.status !== "running")}
+                    >
+                      {autoRunning ? t(UI_COPY.pausePlay) : t(UI_COPY.autoPlay)}
+                    </button>
+                    <button className="danger-button" onClick={() => void handleStop()} disabled={Boolean(busyLabel)}>
+                      {t(UI_COPY.stop)}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {finalInsight ? (
-                <section className="summary-spotlight" data-testid="summary-spotlight">
-                  <div className="summary-spotlight-header">
-                    <div>
-                      <p className="eyebrow">{t(UI_COPY.summarySpotlightEyebrow)}</p>
-                      <h4>{t(UI_COPY.summarySpotlightTitle)}</h4>
-                      <p className="helper-text">{t(UI_COPY.summarySpotlightHint)}</p>
+              <div className="chat-timeline" ref={chatTimelineRef} tabIndex={0}>
+                {finalInsight ? (
+                  <section className="summary-spotlight" data-testid="summary-spotlight">
+                    <div className="summary-spotlight-header">
+                      <div>
+                        <p className="eyebrow">{t(UI_COPY.summarySpotlightEyebrow)}</p>
+                        <h4>{t(UI_COPY.summarySpotlightTitle)}</h4>
+                        <p className="helper-text">{t(UI_COPY.summarySpotlightHint)}</p>
+                      </div>
+                      <div className="inline-actions">
+                        <button className="ghost-button" onClick={() => handleDownloadNotes("md", true)}>
+                          {t(UI_COPY.downloadFinalMd)}
+                        </button>
+                        <button className="ghost-button" onClick={() => handleDownloadNotes("txt", true)}>
+                          {t(UI_COPY.downloadFinalTxt)}
+                        </button>
+                        <button className="primary-button" onClick={() => handleDownloadNotes("md", false)}>
+                          {t(UI_COPY.downloadNotesMd)}
+                        </button>
+                      </div>
                     </div>
-                    <div className="inline-actions">
-                      <button className="ghost-button" onClick={() => handleDownloadNotes("md", true)}>
-                        {t(UI_COPY.downloadFinalMd)}
-                      </button>
-                      <button className="ghost-button" onClick={() => handleDownloadNotes("txt", true)}>
-                        {t(UI_COPY.downloadFinalTxt)}
-                      </button>
-                      <button className="primary-button" onClick={() => handleDownloadNotes("md", false)}>
-                        {t(UI_COPY.downloadNotesMd)}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="summary-spotlight-body">{finalInsight.content}</div>
-                </section>
-              ) : null}
+                    <div className="summary-spotlight-body">{finalInsight.content}</div>
+                  </section>
+                ) : null}
 
-              {busyLabel ? <div className="busy-chip">{busyLabel}</div> : null}
-              {autoRunning ? <div className="busy-chip auto-play-chip">{t(UI_COPY.autoPlayRunning)}</div> : null}
-              {draftRoom.state.activeExchange ? (
-                <div className="exchange-status-card">
-                  <strong>{t(UI_COPY.exchangeStatusTitle)}</strong>
-                  <span>
-                    {t(UI_COPY.exchangeReasonLabel)}: {getExchangeReasonLabel(locale, draftRoom.state.activeExchange.reason)}
-                  </span>
-                  <span>
-                    {t(UI_COPY.exchangeHardTargetLabel)}: {getExchangeHardTargetName(draftRoom) ?? "-"}
-                  </span>
-                  <span>
-                    {t(UI_COPY.exchangeRespondedLabel)}: {exchangeRespondedNames.length > 0 ? exchangeRespondedNames.join(", ") : "-"}
-                  </span>
-                  <span>{t(UI_COPY.exchangeOpenLabel)}</span>
+                <div className="chat-status-rail">
+                  {busyLabel ? <div className="busy-chip">{busyLabel}</div> : null}
+                  {autoRunning ? <div className="busy-chip auto-play-chip">{t(UI_COPY.autoPlayRunning)}</div> : null}
+                  {draftRoom.state.activeExchange ? (
+                    <div className="exchange-status-card">
+                      <strong>{t(UI_COPY.exchangeStatusTitle)}</strong>
+                      <span>
+                        {t(UI_COPY.exchangeReasonLabel)}: {getExchangeReasonLabel(locale, draftRoom.state.activeExchange.reason)}
+                      </span>
+                      <span>
+                        {t(UI_COPY.exchangeHardTargetLabel)}: {getExchangeHardTargetName(draftRoom) ?? "-"}
+                      </span>
+                      <span>
+                        {t(UI_COPY.exchangeRespondedLabel)}: {exchangeRespondedNames.length > 0 ? exchangeRespondedNames.join(", ") : "-"}
+                      </span>
+                      <span>{t(UI_COPY.exchangeOpenLabel)}</span>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
 
-              <div className="chat-stream" ref={chatStreamRef}>
-                {draftRoom.messages.length > 0 ? (
-                  draftRoom.messages.map((message) => {
-                    const relatedRole = draftRoom.roles.find((role) => role.id === message.roleId);
-                    const accent =
-                      message.kind === "user"
-                        ? "#8c5d14"
-                        : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
-                    const messageMeta = getMessageMetaText(message);
+                <div className="chat-stream">
+                  {draftRoom.messages.length > 0 ? (
+                    draftRoom.messages.map((message) => {
+                      const relatedRole = draftRoom.roles.find((role) => role.id === message.roleId);
+                      const accent =
+                        message.kind === "user"
+                          ? "#8c5d14"
+                          : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
+                      const messageMeta = getMessageMetaText(message);
 
-                    return (
-                      <article
-                        key={message.id}
-                        className={`chat-message kind-${message.kind} ${
-                          draftRoom.state.lastActiveRoleId === message.roleId ? "active" : ""
-                        } ${highlightedMessageId === message.id ? "highlighted" : ""}`}
-                        data-message-id={message.id}
-                      >
-                        <div className="avatar" style={{ backgroundColor: accent }}>
-                          {message.kind === "user" ? getDisplayMessageRoleName(message) : message.roleName.slice(0, 1).toUpperCase()}
-                        </div>
-                        <div className="bubble-wrap">
-                          <div className="message-meta">
-                            <strong>{getDisplayMessageRoleName(message)}</strong>
-                            <span>{messageMeta}</span>
-                            <button
-                              type="button"
-                              className="message-reply-button"
-                              data-testid={`reply-button-${message.id}`}
-                              onClick={() => setPendingReplyToMessageId(message.id)}
-                            >
-                              {t(UI_COPY.reply)}
-                            </button>
+                      return (
+                        <article
+                          key={message.id}
+                          className={`chat-message kind-${message.kind} ${
+                            draftRoom.state.lastActiveRoleId === message.roleId ? "active" : ""
+                          } ${highlightedMessageId === message.id ? "highlighted" : ""}`}
+                          data-message-id={message.id}
+                        >
+                          <div className="avatar" style={{ backgroundColor: accent }}>
+                            {message.kind === "user" ? getDisplayMessageRoleName(message) : message.roleName.slice(0, 1).toUpperCase()}
                           </div>
-                          <div className="message-bubble">
-                            {renderReplyPreview(message)}
-                            {renderRequiredReplyNotice(message)}
-                            {message.content}
+                          <div className="bubble-wrap">
+                            <div className="message-meta">
+                              <strong>{getDisplayMessageRoleName(message)}</strong>
+                              <span>{messageMeta}</span>
+                              <button
+                                type="button"
+                                className="message-reply-button"
+                                data-testid={`reply-button-${message.id}`}
+                                onClick={() => setPendingReplyToMessageId(message.id)}
+                              >
+                                {t(UI_COPY.reply)}
+                              </button>
+                            </div>
+                            <div className="message-bubble">
+                              {renderReplyPreview(message)}
+                              {renderRequiredReplyNotice(message)}
+                              {message.content}
+                            </div>
                           </div>
-                        </div>
-                      </article>
-                    );
-                  })
-                ) : (
-                  <div className="empty-chat">
-                    <p>{t(UI_COPY.noTranscriptTitle)}</p>
-                    <p>{t(UI_COPY.noTranscriptBody)}</p>
-                  </div>
-                )}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-chat">
+                      <p>{t(UI_COPY.noTranscriptTitle)}</p>
+                      <p>{t(UI_COPY.noTranscriptBody)}</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="composer-card">
@@ -1846,7 +1859,7 @@ function App() {
                   </div>
                 ) : null}
                 <textarea
-                  rows={3}
+                  rows={1}
                   data-testid="user-intervention-input"
                   value={userMessageDraft}
                   onChange={(event) => setUserMessageDraft(event.target.value)}
@@ -2237,13 +2250,27 @@ function App() {
                     </div>
                   ) : null}
                 </div>
-                <label className="checkbox-line full-span">
-                  <input
-                    type="checkbox"
-                    checked={draftRoom.checkpointEveryRound}
-                    onChange={(event) => updateRoomField("checkpointEveryRound", event.target.checked)}
+                <label>
+                  {t(UI_COPY.checkpointIntervalLabel)}
+                  <NumericInput
+                    value={draftRoom.checkpointIntervalExchanges}
+                    min={0}
+                    max={12}
+                    step={1}
+                    testId="checkpoint-interval-input"
+                    onCommit={(value) =>
+                      setDraftRoom((current) =>
+                        current
+                          ? {
+                              ...current,
+                              checkpointIntervalExchanges: Math.round(value),
+                              checkpointEveryRound: Math.round(value) > 0,
+                            }
+                          : current,
+                      )
+                    }
                   />
-                  {t(UI_COPY.checkpointEveryRoundLabel)}
+                  <p className="field-note">{t(UI_COPY.checkpointIntervalHint)}</p>
                 </label>
               </div>
             </section>

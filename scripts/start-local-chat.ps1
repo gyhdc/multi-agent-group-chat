@@ -51,6 +51,105 @@ function Wait-TcpPort {
   return $false
 }
 
+function Get-ListeningProcessIds {
+  param(
+    [int[]]$Ports
+  )
+
+  $ids = @()
+  foreach ($port in $Ports) {
+    $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    foreach ($connection in $connections) {
+      if ($connection.OwningProcess) {
+        $ids += [int]$connection.OwningProcess
+      }
+    }
+  }
+
+  return $ids | Sort-Object -Unique
+}
+
+function Get-ProcessInfoSafe {
+  param(
+    [int]$ProcessId
+  )
+
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+      Id = $ProcessId
+      Name = $process.ProcessName
+      Path = $process.Path
+      CommandLine = $cim.CommandLine
+    }
+  } catch {
+    return $null
+  }
+}
+
+function Test-IsLikelyRepoAppProcess {
+  param(
+    [pscustomobject]$ProcessInfo
+  )
+
+  if (-not $ProcessInfo) {
+    return $false
+  }
+
+  $name = [string]$ProcessInfo.Name
+  $commandLine = [string]$ProcessInfo.CommandLine
+  $path = [string]$ProcessInfo.Path
+  $name = $name.ToLowerInvariant()
+
+  if ($name -notin @("node", "powershell", "pwsh", "cmd")) {
+    return $false
+  }
+
+  if ($commandLine -like "*$root*" -or $path -like "*$root*") {
+    return $true
+  }
+
+  if ($commandLine -match "multi-agent-group-chat" -or $commandLine -match "vite" -or $commandLine -match "tsx watch src/index.ts") {
+    return $true
+  }
+
+  return $false
+}
+
+function Stop-StaleRepoAppProcesses {
+  param(
+    [int[]]$Ports
+  )
+
+  $processIds = Get-ListeningProcessIds -Ports $Ports
+  if (-not $processIds -or $processIds.Count -eq 0) {
+    return $false
+  }
+
+  $processes = @($processIds | ForEach-Object { Get-ProcessInfoSafe -ProcessId $_ } | Where-Object { $_ })
+  if ($processes.Count -eq 0) {
+    return $false
+  }
+
+  $foreign = @($processes | Where-Object { -not (Test-IsLikelyRepoAppProcess -ProcessInfo $_) })
+  if ($foreign.Count -gt 0) {
+    $details = $foreign | ForEach-Object { "$($_.Name)#$($_.Id)" }
+    throw "Port 3030 or 5173 is occupied by another process: $($details -join ', ')."
+  }
+
+  foreach ($processInfo in $processes) {
+    try {
+      Stop-Process -Id $processInfo.Id -Force -ErrorAction Stop
+      Write-Host "Stopped stale process $($processInfo.Name) ($($processInfo.Id))"
+    } catch {
+    }
+  }
+
+  Start-Sleep -Milliseconds 600
+  return $true
+}
+
 function Start-LocalProcess {
   param(
     [string]$ScriptPath,
@@ -76,13 +175,24 @@ New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
 if ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -and (Test-TcpPort -HostName "127.0.0.1" -Port 5173)) {
-  if (-not $Background) {
+  if (-not (Test-Path $runtimeFile)) {
+    [void](Stop-StaleRepoAppProcesses -Ports @(3030, 5173))
+  }
+
+  if (-not ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -and (Test-TcpPort -HostName "127.0.0.1" -Port 5173))) {
+    # Stale processes were cleared, continue to start a fresh instance.
+  } elseif (-not $Background) {
     Start-Process "http://127.0.0.1:5173" | Out-Null
     Write-Host "App is already running. Browser opened."
+    exit 0
   } else {
     Write-Host "App is already running."
+    exit 0
   }
-  exit 0
+}
+
+if ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -or (Test-TcpPort -HostName "127.0.0.1" -Port 5173)) {
+  [void](Stop-StaleRepoAppProcesses -Ports @(3030, 5173))
 }
 
 if ((Test-TcpPort -HostName "127.0.0.1" -Port 3030) -or (Test-TcpPort -HostName "127.0.0.1" -Port 5173)) {

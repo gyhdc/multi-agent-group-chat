@@ -789,6 +789,27 @@ function isWindowsCmdLauncher(command: string): boolean {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(command.trim());
 }
 
+function isWindowsShellCommand(command: string): boolean {
+  if (process.platform !== "win32") {
+    return false;
+  }
+
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (isWindowsCmdLauncher(trimmed)) {
+    return true;
+  }
+
+  if (/[\\/]/.test(trimmed)) {
+    return /\.(cmd|bat)$/i.test(trimmed);
+  }
+
+  return !/\.(exe|com)$/i.test(trimmed);
+}
+
 function quoteWindowsCmdArg(value: string): string {
   if (!value) {
     return '""';
@@ -802,7 +823,7 @@ function quoteWindowsCmdArg(value: string): string {
 }
 
 function resolveSpawnCommand(command: string): string {
-  if (isWindowsCmdLauncher(command)) {
+  if (isWindowsShellCommand(command)) {
     return process.env.ComSpec || "cmd.exe";
   }
 
@@ -810,7 +831,7 @@ function resolveSpawnCommand(command: string): string {
 }
 
 function resolveSpawnArgs(command: string, args: string[]): string[] {
-  if (!isWindowsCmdLauncher(command)) {
+  if (!isWindowsShellCommand(command)) {
     return args;
   }
 
@@ -820,6 +841,9 @@ function resolveSpawnArgs(command: string, args: string[]): string[] {
 
 async function requestCodexCli(role: DiscussionRole, promptText: string): Promise<string> {
   const workingDirectory = role.provider.workingDirectory.trim() || APP_ROOT;
+  await fs.access(workingDirectory).catch(() => {
+    throw new Error(`The working directory does not exist: ${workingDirectory}`);
+  });
   const runtimeDir = path.join(workingDirectory, ".codex-provider-runtime");
   const outputFileName = `${randomUUID()}.txt`;
   const outputFile = path.join(runtimeDir, outputFileName);
@@ -868,6 +892,12 @@ async function requestCodexCli(role: DiscussionRole, promptText: string): Promis
     if (/ENOENT|not recognized|not found/i.test(message)) {
       throw new Error(
         "Codex CLI could not be executed. Install @openai/codex or switch the preset to `command = npx` and `launcherArgs = -y @openai/codex`.",
+      );
+    }
+
+    if (/EINVAL/i.test(message) && process.platform === "win32") {
+      throw new Error(
+        "The local CLI could not be spawned on Windows. Use a real executable or `.cmd` launcher such as `D:\\nodejs\\npx.cmd`, and make sure the working directory exists.",
       );
     }
 

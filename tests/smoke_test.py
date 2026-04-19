@@ -67,6 +67,7 @@ def main() -> None:
             page.get_by_test_id("room-tab-button").click()
             page.wait_for_timeout(250)
             page.get_by_test_id("auto-run-delay-input").fill("0.2")
+            page.get_by_test_id("checkpoint-interval-input").fill("1")
             page.wait_for_timeout(250)
             page.get_by_test_id("document-upload-input").set_input_files(str(short_md))
             page.get_by_text("short-notes.md", exact=False).wait_for(timeout=5000)
@@ -106,6 +107,14 @@ def main() -> None:
             page.get_by_test_id("run-all-button").click()
             final_summary = page.get_by_test_id("final-insight-card")
             final_summary.wait_for(timeout=15000)
+            checkpoint_cards = page.locator(".insight-card").count()
+            assert checkpoint_cards >= 2
+
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_timeout(150)
+            page.locator(".chat-stream").evaluate("(el) => { el.scrollTop = el.scrollHeight; }")
+            page.wait_for_timeout(150)
+            assert page.evaluate("() => window.scrollY") == 0
 
             page.screenshot(path=str(SCREENSHOT), full_page=True)
 
