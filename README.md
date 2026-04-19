@@ -15,7 +15,6 @@ Local-first multi-role discussion workspace for structured debate, critique, and
 适合以下场景：
 
 - 审稿人 vs 导师
-- 方法论学者 vs 领域专家
 - 多角色研究组会 / 课题论证
 - 需求评审 / 方案攻防 / 假设校验
 - 用户在讨论中途插入新证据、新数据、新约束
