@@ -664,7 +664,7 @@ code {
 
 .summary-spotlight-body {
   margin-top: 6px;
-  max-height: 128px;
+  max-height: 208px;
   padding-right: 4px;
   overflow-y: auto;
   font-size: 14px;
@@ -780,6 +780,53 @@ code {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 12px 24px rgba(33, 37, 44, 0.05);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-content {
+  white-space: pre-wrap;
+}
+
+.message-toggle-button {
+  margin-top: 10px;
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: #365c7a;
+  font-size: calc(12px * var(--chat-font-scale));
+  font-weight: 700;
+}
+
+.message-toggle-button:hover {
+  color: #1f516b;
+}
+
+.chat-end-marker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px dashed rgba(68, 96, 129, 0.24);
+  background: rgba(248, 250, 253, 0.94);
+}
+
+.chat-end-marker-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.chat-end-marker-copy strong {
+  color: #233243;
+}
+
+.chat-end-marker-copy span {
+  color: #617080;
+  font-size: calc(12px * var(--chat-font-scale));
 }
 
 .reply-preview {

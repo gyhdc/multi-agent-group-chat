@@ -66,6 +66,10 @@ const CHAT_FONT_FACTORS: Record<ChatFontPreset, number> = {
   large: 1.12,
 };
 
+const ROOM_LIMIT_MAX = 999;
+const MESSAGE_COLLAPSE_MAX_LENGTH = 420;
+const MESSAGE_COLLAPSE_MAX_LINES = 8;
+
 function getEnabledParticipants(room: DiscussionRoom): DiscussionRole[] {
   return room.roles.filter((role) => role.enabled && role.kind === "participant");
 }
@@ -286,6 +290,29 @@ function truncateText(content: string, maxLength = 120): string {
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
 }
 
+function isMessageCollapsible(content: string): boolean {
+  const normalized = content.trim();
+  if (!normalized) {
+    return false;
+  }
+  return normalized.length > MESSAGE_COLLAPSE_MAX_LENGTH || normalized.split(/\r?\n/).length > MESSAGE_COLLAPSE_MAX_LINES;
+}
+
+function getCollapsedMessagePreview(content: string): string {
+  const normalized = content.trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  const limitedLines = lines.slice(0, MESSAGE_COLLAPSE_MAX_LINES).join("\n");
+  if (limitedLines.length <= MESSAGE_COLLAPSE_MAX_LENGTH && lines.length <= MESSAGE_COLLAPSE_MAX_LINES) {
+    return limitedLines;
+  }
+
+  return `${limitedLines.slice(0, MESSAGE_COLLAPSE_MAX_LENGTH).trimEnd()}...`;
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -415,6 +442,7 @@ function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [autoRunning, setAutoRunning] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [expandedMessageIds, setExpandedMessageIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyLabel, setBusyLabel] = useState("");
   const [error, setError] = useState("");
@@ -423,6 +451,8 @@ function App() {
   const [selectedCustomResearchDirectionId, setSelectedCustomResearchDirectionId] = useState<string | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
   const autoRunBusyRef = useRef(false);
+  const busyLabelRef = useRef("");
+  const stepPendingRef = useRef(false);
   const chatTimelineRef = useRef<HTMLDivElement | null>(null);
   const lastHydratedRoomIdRef = useRef<string | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
@@ -485,6 +515,11 @@ function App() {
 
   const finalInsight = useMemo(
     () => draftRoom?.summary.insights.find((insight) => insight.kind === "final") ?? null,
+    [draftRoom],
+  );
+  const discussionEndStatus = useMemo(
+    () =>
+      draftRoom?.state.status === "completed" || draftRoom?.state.status === "stopped" ? draftRoom.state.status : null,
     [draftRoom],
   );
 
@@ -603,6 +638,20 @@ function App() {
       turn: String(message.turn),
       time: formatWhen(message.createdAt, locale),
     });
+  }
+
+  function isMessageExpanded(messageId: string): boolean {
+    return expandedMessageIds.includes(messageId);
+  }
+
+  function toggleMessageExpanded(messageId: string): void {
+    setExpandedMessageIds((current) =>
+      current.includes(messageId) ? current.filter((id) => id !== messageId) : [...current, messageId],
+    );
+  }
+
+  function getDiscussionEndTitle(status: "completed" | "stopped"): string {
+    return status === "completed" ? t(UI_COPY.discussionCompleted) : t(UI_COPY.discussionStopped);
   }
 
   function getInsightMetaText(insight: InsightEntry): string {
@@ -816,6 +865,7 @@ function App() {
       setDraftRoom(null);
       setSelectedRoleId(null);
       setPendingReplyToMessageId(null);
+      setExpandedMessageIds([]);
       setAutoRunning(false);
       lastHydratedRoomIdRef.current = null;
       return;
@@ -827,6 +877,7 @@ function App() {
     setDraftRoom(nextDraft);
     if (roomChanged) {
       setPendingReplyToMessageId(null);
+      setExpandedMessageIds([]);
       setAutoRunning(false);
     }
     setSelectedRoleId((current) => {
@@ -853,6 +904,17 @@ function App() {
     if (!draftRoom) {
       return;
     }
+    setExpandedMessageIds((current) => {
+      const validIds = new Set(draftRoom.messages.map((message) => message.id));
+      const next = current.filter((id) => validIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [draftRoom?.id, draftRoom?.updatedAt]);
+
+  useEffect(() => {
+    if (!draftRoom) {
+      return;
+    }
     if (isBuiltInResearchDirection(draftRoom.researchDirectionKey)) {
       return;
     }
@@ -870,10 +932,16 @@ function App() {
   }, [draftRoom?.messages.length]);
 
   useEffect(() => {
+    busyLabelRef.current = busyLabel;
+  }, [busyLabel]);
+
+  useEffect(() => {
+    stepPendingRef.current = stepPending;
+  }, [stepPending]);
+
+  useEffect(() => {
     return () => {
-      if (autoRunTimerRef.current !== null) {
-        window.clearTimeout(autoRunTimerRef.current);
-      }
+      clearAutoRunTimer();
     };
   }, []);
 
@@ -922,6 +990,10 @@ function App() {
     window.setTimeout(() => {
       setHighlightedMessageId((current) => (current === messageId ? null : current));
     }, 1800);
+  }
+
+  function scrollChatToTop(): void {
+    chatTimelineRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function syncRoom(room: DiscussionRoom): void {
@@ -1022,7 +1094,7 @@ function App() {
   }
 
   async function performAutoStep(): Promise<void> {
-    if (!draftRoom || autoRunBusyRef.current) {
+    if (!draftRoom || autoRunBusyRef.current || busyLabelRef.current || stepPendingRef.current) {
       return;
     }
 
@@ -1061,6 +1133,10 @@ function App() {
       return;
     }
 
+    if (busyLabel || stepPending) {
+      return;
+    }
+
     const delayMs = Math.max(200, Math.round(draftRoom.autoRunDelaySeconds * 1000));
     autoRunTimerRef.current = window.setTimeout(() => {
       void performAutoStep();
@@ -1071,16 +1147,13 @@ function App() {
     };
   }, [
     autoRunning,
+    busyLabel,
+    stepPending,
     draftRoom?.id,
     draftRoom?.autoRunDelaySeconds,
     draftRoom?.state.status,
-    draftRoom?.state.phase,
-    draftRoom?.state.activeExchange?.id,
-    draftRoom?.state.activeExchange?.sequenceNumber,
-    draftRoom?.state.activeExchange?.reason,
-    draftRoom?.state.activeExchange?.hardTargetRoleId,
-    draftRoom?.state.pendingRequiredReplies.length,
-    draftRoom?.summary.updatedAt,
+    draftRoom?.state.totalTurns,
+    draftRoom?.updatedAt,
   ]);
 
   function updateRoomField<K extends keyof DiscussionRoom>(field: K, value: DiscussionRoom[K]): void {
@@ -2292,6 +2365,9 @@ function App() {
                         ? "#8c5d14"
                         : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
                     const messageMeta = getMessageMetaText(message);
+                    const collapsible = isMessageCollapsible(message.content);
+                    const expanded = isMessageExpanded(message.id);
+                    const visibleContent = collapsible && !expanded ? getCollapsedMessagePreview(message.content) : message.content;
 
                     return (
                       <article
@@ -2320,7 +2396,16 @@ function App() {
                           <div className="message-bubble">
                             {renderReplyPreview(message)}
                             {renderRequiredReplyNotice(message)}
-                            {message.content}
+                            <div className={`message-content ${collapsible && !expanded ? "collapsed" : ""}`}>{visibleContent}</div>
+                            {collapsible ? (
+                              <button
+                                type="button"
+                                className="message-toggle-button"
+                                onClick={() => toggleMessageExpanded(message.id)}
+                              >
+                                {expanded ? t(UI_COPY.collapseMessage) : t(UI_COPY.expandMessage)}
+                              </button>
+                            ) : null}
                           </div>
                         </div>
                       </article>
@@ -2349,7 +2434,18 @@ function App() {
                       </div>
                     </article>
                   ) : null}
-                  {draftRoom.messages.length === 0 && !visibleLoadingRoleSnapshot ? (
+                  {discussionEndStatus ? (
+                    <div className="chat-end-marker" data-testid="chat-end-marker">
+                      <div className="chat-end-marker-copy">
+                        <strong>{getDiscussionEndTitle(discussionEndStatus)}</strong>
+                        <span>{t(UI_COPY.discussionEndHint)}</span>
+                      </div>
+                      <button type="button" className="ghost-button" onClick={scrollChatToTop}>
+                        {t(UI_COPY.scrollToTop)}
+                      </button>
+                    </div>
+                  ) : null}
+                  {draftRoom.messages.length === 0 && !visibleLoadingRoleSnapshot && !discussionEndStatus ? (
                     <div className="empty-chat">
                       <p>{t(UI_COPY.noTranscriptTitle)}</p>
                       <p>{t(UI_COPY.noTranscriptBody)}</p>
@@ -2536,7 +2632,7 @@ function App() {
                   <NumericInput
                     value={draftRoom.maxRounds}
                     min={1}
-                    max={12}
+                    max={ROOM_LIMIT_MAX}
                     step={1}
                     onCommit={(value) => updateRoomField("maxRounds", Math.round(value))}
                   />
@@ -2784,7 +2880,7 @@ function App() {
                   <NumericInput
                     value={draftRoom.checkpointIntervalRounds}
                     min={0}
-                    max={12}
+                    max={ROOM_LIMIT_MAX}
                     step={1}
                     testId="checkpoint-interval-input"
                     onCommit={(value) =>

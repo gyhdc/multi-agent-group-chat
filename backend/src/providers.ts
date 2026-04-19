@@ -43,6 +43,11 @@ interface ReplyCandidate {
   roleName: string;
   excerpt: string;
   kind: ChatMessage["kind"];
+  turn: number;
+  round: number;
+  replyToMessageId: string | null;
+  replyToRoleName: string | null;
+  requiredReplyRoleName: string | null;
 }
 
 interface ForceReplyCandidate {
@@ -89,8 +94,13 @@ function getReplyCandidates(room: DiscussionRoom, limit = 8, orderedIds?: string
       id: message.id,
       roleId: message.roleId,
       roleName: message.roleName,
-      excerpt: trimText(message.content, 110),
+      excerpt: trimText(message.content, 200),
       kind: message.kind,
+      turn: message.turn,
+      round: message.round,
+      replyToMessageId: message.replyToMessageId ?? null,
+      replyToRoleName: message.replyToRoleName ?? null,
+      requiredReplyRoleName: message.requiredReplyRoleName ?? null,
     }));
 
   if (!orderedIds || orderedIds.length === 0) {
@@ -151,13 +161,13 @@ function pickFallbackReply(room: DiscussionRoom, forcedReply?: PendingRequiredRe
     return toReplyMetadata(room, forcedReply.sourceMessageId);
   }
 
-  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
-  if (latestUser) {
-    return toReplyMetadata(room, latestUser.id);
-  }
-
-  const latestParticipant = [...room.messages].reverse().find((message) => message.kind === "participant");
-  return toReplyMetadata(room, latestParticipant?.id ?? null);
+  return {
+    content: "",
+    replyToMessageId: null,
+    replyToRoleName: null,
+    replyToExcerpt: null,
+    forceReplyRoleId: null,
+  };
 }
 
 function applyForcedReplyConstraints(
@@ -234,6 +244,24 @@ function formatActiveExchangeContext(room: DiscussionRoom, role: DiscussionRole,
     `You have ${exchange.followUpTurnsRemaining} follow-up turns remaining in this exchange after the hard target response.`,
     `You are${exchange.hardTargetRoleId === role.id ? "" : " not"} the hard target role for this exchange.`,
   ].join("\n\n");
+}
+
+function formatPromptMessage(message: ChatMessage): string {
+  const replyLabel = message.replyToMessageId
+    ? `reply-to=${message.replyToRoleName ?? "unknown"}#${message.replyToMessageId}`
+    : "reply-to=broadcast";
+  const requiredReplyLabel = message.requiredReplyRoleName ? `next-required-reply=${message.requiredReplyRoleName}` : "next-required-reply=none";
+  return `[round ${message.round} turn ${message.turn}] ${message.roleName} (${message.kind}; ${replyLabel}; ${requiredReplyLabel})\n${trimText(message.content, 260)}`;
+}
+
+function formatReplyCandidate(candidate: ReplyCandidate): string {
+  const replyLabel = candidate.replyToMessageId
+    ? `reply-to=${candidate.replyToRoleName ?? "unknown"}#${candidate.replyToMessageId}`
+    : "reply-to=broadcast";
+  const requiredReplyLabel = candidate.requiredReplyRoleName
+    ? `next-required-reply=${candidate.requiredReplyRoleName}`
+    : "next-required-reply=none";
+  return `${candidate.id} | round ${candidate.round} turn ${candidate.turn} | ${candidate.roleName} | ${candidate.kind} | ${replyLabel} | ${requiredReplyLabel}\n${candidate.excerpt}`;
 }
 
 function buildParticipantSystemPrompt(
@@ -316,14 +344,14 @@ function buildParticipantUserPrompt(
   selectionReason?: string,
 ): string {
   const recentMessages = getRecentMessages(room, 12)
-    .map((message) => `${message.roleName}: ${message.content}`)
+    .map((message) => formatPromptMessage(message))
     .join("\n");
   const recentInsights = getRecentInsights(room, 4)
     .map((insight) => `${insight.title}: ${insight.content}`)
     .join("\n");
   const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
   const replyCandidateLines = replyCandidates.length
-    ? replyCandidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.excerpt}`).join("\n")
+    ? replyCandidates.map((candidate) => formatReplyCandidate(candidate)).join("\n\n")
     : "No reply candidates.";
   const forceReplyCandidateLines = forceReplyCandidates.length
     ? forceReplyCandidates.map((candidate) => `${candidate.id} | ${candidate.roleName} | ${candidate.goal}`).join("\n")
@@ -383,7 +411,10 @@ function buildRecorderSystemPrompt(room: DiscussionRoom, role: DiscussionRole, f
     finalMode
       ? "- The final conclusion must include: final judgment, why it holds, decisive evidence, remaining risk, and next action."
       : "- The checkpoint must include: strongest current claim, strongest rebuttal, strongest evidence, unresolved blocker, and what the next round must settle.",
-    "- Keep it concise but genuinely insightful.",
+    finalMode
+      ? "- Write 2-4 compact paragraphs with enough detail to stand alone as a usable conclusion."
+      : "- Write 1-3 compact paragraphs with enough concrete detail to guide the next round.",
+    "- Keep it dense and readable, not verbose.",
     "- Do not use markdown bullets.",
   ].join("\n");
 }
@@ -391,7 +422,7 @@ function buildRecorderSystemPrompt(room: DiscussionRoom, role: DiscussionRole, f
 function buildRecorderUserPrompt(room: DiscussionRoom, finalMode: boolean): string {
   const recentMessages = getRecentMessages(room, 16)
     .filter((message) => message.kind === "participant" || message.kind === "user")
-    .map((message) => `${message.roleName}: ${message.content}`)
+    .map((message) => formatPromptMessage(message))
     .join("\n");
   const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
 
@@ -404,7 +435,9 @@ function buildRecorderUserPrompt(room: DiscussionRoom, finalMode: boolean): stri
     formatDocumentContext(room),
     latestUser ? `Latest user evidence:\n${latestUser.content}` : "Latest user evidence:\nNone.",
     recentMessages ? `Recent discussion messages:\n${recentMessages}` : "Recent discussion messages:\nNone yet.",
-    finalMode ? "Produce the final conclusion." : "Produce a checkpoint note.",
+    finalMode
+      ? "Produce the final conclusion with enough detail to stand on its own."
+      : "Produce a checkpoint note with concrete detail that helps the next round.",
   ].join("\n\n");
 }
 
@@ -634,6 +667,63 @@ function buildMockRecorderMessage(room: DiscussionRoom, finalMode: boolean): str
       `Next round must settle whether ${profile.evidenceStandards[0]} can be met.`,
     ].join("\n"),
     360,
+  );
+}
+
+function buildExpandedMockRecorderMessage(room: DiscussionRoom, finalMode: boolean): string {
+  const profile = getResearchProfile(room.researchDirectionKey);
+  const latestUser = [...room.messages].reverse().find((message) => message.kind === "user");
+
+  if (room.discussionLanguage === "zh-CN") {
+    if (finalMode) {
+      return trimText(
+        [
+          "最终判断：这个方向可以继续，但结论只能建立在更收缩、更可验证的版本上。",
+          `判断依据：讨论已经明显围绕 ${profile.evaluationAxes[0]} 收敛，但 ${profile.failureModes[0]} 仍然压低整体置信度。`,
+          latestUser ? "用户证据影响：最新的用户证据确实改变了讨论焦点，但还不足以单独构成定案证据。" : "用户证据影响：本轮没有新的用户证据足以改写总体判断。",
+          `决定性证据：当前最有价值的支持仍然来自围绕 ${profile.evidenceStandards[0]} 所构造的可验证路径，而不是额外扩张结论。`,
+          `剩余风险：如果 ${profile.failureModes[0]} 继续存在，那么现阶段最合理的结论就只能是谨慎推进，而不是高置信接受。`,
+          `下一步：优先补足 ${profile.evidenceStandards[0]}，再决定是否能把谨慎判断升级成更强结论。`,
+        ].join("\n"),
+        1100,
+      );
+    }
+
+    return trimText(
+      [
+        `当前最强主张：讨论正在围绕 ${profile.evaluationAxes[0]} 收敛，这说明房间已经找到主要分歧轴。`,
+        `最强反驳：${profile.failureModes[0]} 仍是主要障碍，所以现阶段还不能把中间判断直接抬升为最终结论。`,
+        latestUser ? "用户证据影响：最新的用户证据已经被吸收进论证，但它更像是重排优先级，而不是一次性解决争议。" : "用户证据影响：暂无新的用户证据改变当前争议结构。",
+        `当前最有效的修正方向：把后续论证直接绑定到 ${profile.evidenceStandards[0]}，避免继续停留在宽泛表述。`,
+        `下一轮必须解决：${profile.evidenceStandards[0]} 是否真的足以支持更强判断，以及它能否实质削弱 ${profile.failureModes[0]}。`,
+      ].join("\n"),
+      820,
+    );
+  }
+
+  if (finalMode) {
+    return trimText(
+      [
+        "Final judgment: continue only in a narrower and more testable form.",
+        `Why: the room is converging on ${profile.evaluationAxes[0]}, but ${profile.failureModes[0]} still limits confidence.`,
+        latestUser ? "User evidence impact: the latest user evidence changed the discussion focus, but not enough to close the case on its own." : "User evidence impact: no new user evidence materially changed the overall judgment.",
+        `Decisive evidence: the most useful support still depends on whether the room can satisfy ${profile.evidenceStandards[0]}.`,
+        `Remaining risk: if ${profile.failureModes[0]} stays unresolved, the conclusion should remain cautious rather than strong.`,
+        `Next action: provide ${profile.evidenceStandards[0]} before strengthening the claim.`,
+      ].join("\n"),
+      1100,
+    );
+  }
+
+  return trimText(
+    [
+      `Strongest current claim: the room is converging on ${profile.evaluationAxes[0]}, which has become the main decision axis.`,
+      `Strongest rebuttal: ${profile.failureModes[0]} remains the main blocker, so the current case is not yet decisive.`,
+      latestUser ? "User evidence impact: the latest user evidence shifted the room, but it reprioritized the debate more than it resolved it." : "User evidence impact: no fresh user evidence changed the current dispute structure.",
+      `Best current repair: tie the next argument directly to ${profile.evidenceStandards[0]} instead of broadening the claim.`,
+      `Next round must settle whether ${profile.evidenceStandards[0]} can actually be met and whether it weakens ${profile.failureModes[0]}.`,
+    ].join("\n"),
+    820,
   );
 }
 
@@ -1056,7 +1146,7 @@ export async function generateParticipantContent(
 
 export async function generateRecorderCheckpoint(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
   if (role.provider.type === "mock") {
-    return buildMockRecorderMessage(room, false);
+    return buildExpandedMockRecorderMessage(room, false);
   }
 
   const prompt = buildRecorderPromptPayload(room, role, false);
@@ -1067,12 +1157,12 @@ export async function generateRecorderCheckpoint(room: DiscussionRoom, role: Dis
         ? await requestOpenAICompatible(role, prompt)
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
-  return trimText(raw, 420);
+  return trimText(raw, 900);
 }
 
 export async function generateRecorderFinal(room: DiscussionRoom, role: DiscussionRole): Promise<string> {
   if (role.provider.type === "mock") {
-    return buildMockRecorderMessage(room, true);
+    return buildExpandedMockRecorderMessage(room, true);
   }
 
   const prompt = buildRecorderPromptPayload(room, role, true);
@@ -1083,7 +1173,7 @@ export async function generateRecorderFinal(room: DiscussionRoom, role: Discussi
         ? await requestOpenAICompatible(role, prompt)
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
-  return trimText(raw, 480);
+  return trimText(raw, 1400);
 }
 
 export async function generateRecorderTopic(room: DiscussionRoom, role: DiscussionRole): Promise<string> {

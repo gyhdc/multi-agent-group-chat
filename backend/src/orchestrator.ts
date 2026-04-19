@@ -367,6 +367,14 @@ function hasPendingUserEvidence(room: DiscussionRoom, roleId: string, openedAtTu
   return !roleRespondedAfterTurn(room, roleId, latestUser.turn);
 }
 
+function getLatestPendingUserMessageForRole(room: DiscussionRoom, roleId: string, openedAtTurn: number): ChatMessage | null {
+  const latestUser = getLatestUserMessage(room, openedAtTurn);
+  if (!latestUser) {
+    return null;
+  }
+  return roleRespondedAfterTurn(room, roleId, latestUser.turn) ? null : latestUser;
+}
+
 function getPrimaryReplyCandidates(room: DiscussionRoom, roleId: string, openedAtTurn: number): ChatMessage[] {
   const exchange = room.state.activeExchange;
   const seen = new Set<string>();
@@ -384,8 +392,9 @@ function getPrimaryReplyCandidates(room: DiscussionRoom, roleId: string, openedA
     pushCandidate(findMessage(room, exchange.triggerMessageId));
   }
 
-  pushCandidate(getLatestDirectChallenge(room, roleId, openedAtTurn));
   pushCandidate(getLatestDirectedUserMessageForRole(room, roleId, openedAtTurn));
+  pushCandidate(getLatestPendingUserMessageForRole(room, roleId, openedAtTurn));
+  pushCandidate(getLatestDirectChallenge(room, roleId, openedAtTurn));
 
   for (let index = room.messages.length - 1; index >= 0 && result.length < 4; index -= 1) {
     const message = room.messages[index];
@@ -490,8 +499,9 @@ function buildDeliveryPlan(room: DiscussionRoom, speaker: DiscussionRole, forced
   const hasMandatoryReply = Boolean(hardTargetMessage);
   const pendingDirectChallenge = hasPendingDirectChallenge(room, speaker.id, openedAtTurn);
   const directedUserMessage = getLatestDirectedUserMessageForRole(room, speaker.id, openedAtTurn);
+  const pendingUserMessage = getLatestPendingUserMessageForRole(room, speaker.id, openedAtTurn);
 
-  const mode: DeliveryMode = hasMandatoryReply || pendingDirectChallenge || Boolean(directedUserMessage)
+  const mode: DeliveryMode = hasMandatoryReply || pendingDirectChallenge || Boolean(directedUserMessage) || Boolean(pendingUserMessage)
     ? "must-reply"
     : replyCandidates.length > 0
       ? "prefer-reply"

@@ -75,16 +75,16 @@ function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>):
         : existing.autoRunDelaySeconds,
     maxRounds:
       typeof incoming.maxRounds === "number" && Number.isFinite(incoming.maxRounds)
-        ? Math.max(1, Math.min(12, incoming.maxRounds))
+        ? Math.max(1, Math.min(999, incoming.maxRounds))
         : existing.maxRounds,
     checkpointEveryRound:
       typeof incoming.checkpointEveryRound === "boolean" ? incoming.checkpointEveryRound : existing.checkpointEveryRound,
     checkpointIntervalRounds:
       typeof legacyIncoming.checkpointIntervalRounds === "number" && Number.isFinite(legacyIncoming.checkpointIntervalRounds)
-        ? Math.max(0, Math.min(12, Math.floor(legacyIncoming.checkpointIntervalRounds)))
+        ? Math.max(0, Math.min(999, Math.floor(legacyIncoming.checkpointIntervalRounds)))
         : typeof legacyIncoming.checkpointIntervalExchanges === "number" &&
             Number.isFinite(legacyIncoming.checkpointIntervalExchanges)
-          ? Math.max(0, Math.min(12, Math.floor(legacyIncoming.checkpointIntervalExchanges)))
+          ? Math.max(0, Math.min(999, Math.floor(legacyIncoming.checkpointIntervalExchanges)))
           : existing.checkpointIntervalRounds,
     roles: incoming.roles ? normalizeRoles(incoming.roles) : existing.roles,
     updatedAt: new Date().toISOString(),

@@ -437,15 +437,15 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
         : base.autoRunDelaySeconds,
     maxRounds:
       typeof input.maxRounds === "number" && Number.isFinite(input.maxRounds)
-        ? Math.max(1, Math.min(12, input.maxRounds))
+        ? Math.max(1, Math.min(999, input.maxRounds))
         : base.maxRounds,
     checkpointEveryRound:
       typeof input.checkpointEveryRound === "boolean" ? input.checkpointEveryRound : base.checkpointEveryRound,
     checkpointIntervalRounds:
       typeof legacyInput.checkpointIntervalRounds === "number" && Number.isFinite(legacyInput.checkpointIntervalRounds)
-        ? Math.max(0, Math.min(12, Math.floor(legacyInput.checkpointIntervalRounds)))
+        ? Math.max(0, Math.min(999, Math.floor(legacyInput.checkpointIntervalRounds)))
         : typeof legacyInput.checkpointIntervalExchanges === "number" && Number.isFinite(legacyInput.checkpointIntervalExchanges)
-          ? Math.max(0, Math.min(12, Math.floor(legacyInput.checkpointIntervalExchanges)))
+          ? Math.max(0, Math.min(999, Math.floor(legacyInput.checkpointIntervalExchanges)))
         : typeof input.checkpointEveryRound === "boolean"
           ? input.checkpointEveryRound
             ? 1
