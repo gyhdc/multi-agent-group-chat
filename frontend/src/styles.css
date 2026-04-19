@@ -828,6 +828,63 @@ code {
   background: linear-gradient(135deg, #fff1d9, #fff7ec);
 }
 
+.typing-message {
+  opacity: 0.94;
+}
+
+.typing-message .message-meta {
+  margin-bottom: 6px;
+}
+
+.typing-status {
+  letter-spacing: 0.12em;
+  color: #8a95a4;
+}
+
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  min-height: 46px;
+  padding-right: 18px;
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.typing-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.28;
+  animation: typing-bounce 1s infinite ease-in-out;
+}
+
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.28;
+  }
+
+  40% {
+    transform: translateY(-4px);
+    opacity: 0.82;
+  }
+}
+
 .empty-chat {
   border-radius: 20px;
   border: 1px dashed rgba(78, 92, 108, 0.22);

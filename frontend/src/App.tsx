@@ -47,6 +47,13 @@ import {
 
 type StudioTab = "room" | "roles" | "presets";
 
+type LoadingRoleSnapshot = {
+  roleId: string;
+  roleName: string;
+  kind: DiscussionRoleKind;
+  accentColor: string;
+};
+
 const UI_SCALE_FACTORS: Record<UiScalePreset, number> = {
   compact: 0.9,
   default: 1,
@@ -58,6 +65,178 @@ const CHAT_FONT_FACTORS: Record<ChatFontPreset, number> = {
   medium: 1,
   large: 1.12,
 };
+
+function getEnabledParticipants(room: DiscussionRoom): DiscussionRole[] {
+  return room.roles.filter((role) => role.enabled && role.kind === "participant");
+}
+
+function getEnabledParticipant(room: DiscussionRoom, roleId: string | null | undefined): DiscussionRole | null {
+  if (!roleId) {
+    return null;
+  }
+  return room.roles.find((role) => role.enabled && role.kind === "participant" && role.id === roleId) ?? null;
+}
+
+function getEnabledRecorder(room: DiscussionRoom): DiscussionRole | null {
+  return room.roles.find((role) => role.enabled && role.kind === "recorder") ?? null;
+}
+
+function getParticipantActivity(room: DiscussionRoom, roleId: string): DiscussionRoom["state"]["participantActivity"][string] {
+  return (
+    room.state.participantActivity[roleId] ?? {
+      lastSpokeTurn: 0,
+      lastSpokeRound: 0,
+      starvationDebt: 0,
+      consecutiveSelections: 0,
+      lastReplyTargetRoleId: null,
+      directPressureDebt: 0,
+      userPressureDebt: 0,
+    }
+  );
+}
+
+function getLatestParticipantMessage(room: DiscussionRoom): ChatMessage | null {
+  for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+    const message = room.messages[index];
+    if (message.kind === "participant") {
+      return message;
+    }
+  }
+  return null;
+}
+
+function roleRespondedAfterTurn(room: DiscussionRoom, roleId: string, turn: number): boolean {
+  return room.messages.some((message) => message.kind === "participant" && message.roleId === roleId && message.turn > turn);
+}
+
+function getLatestUserMessage(room: DiscussionRoom, openedAtTurn: number): ChatMessage | null {
+  for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+    const message = room.messages[index];
+    if (message.kind === "user" && message.turn >= openedAtTurn) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function getLatestDirectChallenge(room: DiscussionRoom, roleId: string, openedAtTurn: number): ChatMessage | null {
+  for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+    const message = room.messages[index];
+    if ((message.kind !== "participant" && message.kind !== "user") || message.roleId === roleId || message.turn < openedAtTurn) {
+      continue;
+    }
+    const replyTarget = room.messages.find((candidate) => candidate.id === message.replyToMessageId) ?? null;
+    if (replyTarget?.roleId === roleId) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function hasPendingDirectChallenge(room: DiscussionRoom, roleId: string, openedAtTurn: number): boolean {
+  const latestDirectChallenge = getLatestDirectChallenge(room, roleId, openedAtTurn);
+  return Boolean(latestDirectChallenge && !roleRespondedAfterTurn(room, roleId, latestDirectChallenge.turn));
+}
+
+function hasPendingUserEvidence(room: DiscussionRoom, roleId: string, openedAtTurn: number): boolean {
+  const latestUserMessage = getLatestUserMessage(room, openedAtTurn);
+  if (!latestUserMessage) {
+    return false;
+  }
+  return !roleRespondedAfterTurn(room, roleId, latestUserMessage.turn);
+}
+
+function toLoadingRoleSnapshot(role: DiscussionRole | null): LoadingRoleSnapshot | null {
+  if (!role) {
+    return null;
+  }
+  return {
+    roleId: role.id,
+    roleName: role.name,
+    kind: role.kind,
+    accentColor: role.accentColor,
+  };
+}
+
+function predictNextSpeakingRole(room: DiscussionRoom): DiscussionRole | null {
+  const recorder = getEnabledRecorder(room);
+  if (room.state.phase === "recorder" || room.state.phase === "final") {
+    return recorder;
+  }
+
+  const participants = getEnabledParticipants(room);
+  if (participants.length === 0) {
+    return recorder;
+  }
+
+  if (room.state.status !== "running") {
+    return participants[0] ?? recorder;
+  }
+
+  const forcedReply = room.state.pendingRequiredReplies.find(
+    (candidate) => room.messages.some((message) => message.id === candidate.sourceMessageId) && getEnabledParticipant(room, candidate.targetRoleId),
+  );
+  if (forcedReply) {
+    return getEnabledParticipant(room, forcedReply.targetRoleId);
+  }
+
+  const exchange = room.state.activeExchange;
+  if (!exchange) {
+    return participants.find((role) => room.state.roundPendingRoleIds.includes(role.id)) ?? participants[0] ?? recorder;
+  }
+
+  const participantById = new Map(participants.map((role) => [role.id, role]));
+  const pendingPool = room.state.roundPendingRoleIds
+    .map((roleId) => participantById.get(roleId) ?? null)
+    .filter((role): role is DiscussionRole => Boolean(role));
+
+  if (pendingPool.length === 0) {
+    return null;
+  }
+
+  const starvedPool = pendingPool.filter((role) => getParticipantActivity(room, role.id).starvationDebt >= 3);
+  const pool = starvedPool.length > 0 ? starvedPool : pendingPool;
+  const latestParticipant = getLatestParticipantMessage(room);
+
+  const sortedCandidates = pool
+    .map((role) => {
+      const activity = getParticipantActivity(room, role.id);
+      const turnsSinceLastSpeech = activity.lastSpokeTurn > 0 ? room.state.totalTurns - activity.lastSpokeTurn : room.state.totalTurns + 1;
+      const pendingDirectChallenge = hasPendingDirectChallenge(room, role.id, exchange.openedAtTurn);
+      const pendingUserEvidence = hasPendingUserEvidence(room, role.id, exchange.openedAtTurn);
+      const isHardTarget = exchange.hardTargetRoleId === role.id && !exchange.respondedRoleIds.includes(role.id);
+
+      let score = Math.min(48, turnsSinceLastSpeech * 6);
+      score += activity.starvationDebt * 18;
+      score += pendingDirectChallenge ? 40 + activity.directPressureDebt * 8 : 0;
+      score += pendingUserEvidence ? 30 + activity.userPressureDebt * 6 : 0;
+      score += isHardTarget ? 120 : 0;
+      score -= latestParticipant?.roleId === role.id ? 90 : 0;
+      score -= activity.consecutiveSelections > 1 ? 50 * activity.consecutiveSelections : 0;
+      score -= latestParticipant?.roleId === activity.lastReplyTargetRoleId ? 35 : 0;
+
+      return {
+        role,
+        score,
+        starvationDebt: activity.starvationDebt,
+        turnsSinceLastSpeech,
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      if (right.starvationDebt !== left.starvationDebt) {
+        return right.starvationDebt - left.starvationDebt;
+      }
+      if (right.turnsSinceLastSpeech !== left.turnsSinceLastSpeech) {
+        return right.turnsSinceLastSpeech - left.turnsSinceLastSpeech;
+      }
+      return participants.findIndex((role) => role.id === left.role.id) - participants.findIndex((role) => role.id === right.role.id);
+    });
+
+  return sortedCandidates[0]?.role ?? pendingPool[0] ?? participants[0] ?? recorder;
+}
 
 function cloneRoom(room: DiscussionRoom): DiscussionRoom {
   return structuredClone(room);
@@ -239,6 +418,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [busyLabel, setBusyLabel] = useState("");
   const [error, setError] = useState("");
+  const [loadingRoleSnapshot, setLoadingRoleSnapshot] = useState<LoadingRoleSnapshot | null>(null);
   const [selectedCustomResearchDirectionId, setSelectedCustomResearchDirectionId] = useState<string | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
   const autoRunBusyRef = useRef(false);
@@ -792,11 +972,29 @@ function App() {
     return saved;
   }
 
+  async function stepRoomWithSpeakingIndicator(room: DiscussionRoom): Promise<DiscussionRoom> {
+    setLoadingRoleSnapshot(toLoadingRoleSnapshot(predictNextSpeakingRole(room)));
+
+    try {
+      return await api.stepRoom(room.id);
+    } finally {
+      setLoadingRoleSnapshot(null);
+    }
+  }
+
   async function stepDiscussion(options: { stopAutoRunning: boolean; withTaskLabel: boolean }): Promise<void> {
     const execute = async () => {
+      setLoadingRoleSnapshot(toLoadingRoleSnapshot(draftRoom ? predictNextSpeakingRole(draftRoom) : null));
       const room = await ensureRunningRoom();
-      const stepped = await api.stepRoom(room.id);
+      const stepped = await stepRoomWithSpeakingIndicator(room);
       syncRoom(stepped);
+    };
+    const executeSafely = async () => {
+      try {
+        await execute();
+      } finally {
+        setLoadingRoleSnapshot(null);
+      }
     };
 
     if (options.stopAutoRunning) {
@@ -804,11 +1002,11 @@ function App() {
     }
 
     if (options.withTaskLabel) {
-      await runTask(t(UI_COPY.step), execute);
+      await runTask(t(UI_COPY.step), executeSafely);
       return;
     }
 
-    await execute();
+    await executeSafely();
   }
 
   async function performAutoStep(): Promise<void> {
@@ -1080,7 +1278,7 @@ function App() {
       setPendingReplyToMessageId(null);
 
       if (room.state.pendingRequiredReplies.length > 0) {
-        const stepped = await api.stepRoom(room.id);
+        const stepped = await stepRoomWithSpeakingIndicator(room);
         syncRoom(stepped);
       }
     });
@@ -2073,54 +2271,76 @@ function App() {
                 </div>
 
                 <div className="chat-stream">
-                  {draftRoom.messages.length > 0 ? (
-                    draftRoom.messages.map((message) => {
-                      const relatedRole = draftRoom.roles.find((role) => role.id === message.roleId);
-                      const accent =
-                        message.kind === "user"
-                          ? "#8c5d14"
-                          : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
-                      const messageMeta = getMessageMetaText(message);
+                  {draftRoom.messages.map((message) => {
+                    const relatedRole = draftRoom.roles.find((role) => role.id === message.roleId);
+                    const accent =
+                      message.kind === "user"
+                        ? "#8c5d14"
+                        : relatedRole?.accentColor ?? (message.kind === "recorder" ? "#5c6476" : "#738195");
+                    const messageMeta = getMessageMetaText(message);
 
-                      return (
-                        <article
-                          key={message.id}
-                          className={`chat-message kind-${message.kind} ${
-                            draftRoom.state.lastActiveRoleId === message.roleId ? "active" : ""
-                          } ${highlightedMessageId === message.id ? "highlighted" : ""}`}
-                          data-message-id={message.id}
-                        >
-                          <div className="avatar" style={{ backgroundColor: accent }}>
-                            {message.kind === "user" ? getDisplayMessageRoleName(message) : message.roleName.slice(0, 1).toUpperCase()}
+                    return (
+                      <article
+                        key={message.id}
+                        className={`chat-message kind-${message.kind} ${
+                          draftRoom.state.lastActiveRoleId === message.roleId ? "active" : ""
+                        } ${highlightedMessageId === message.id ? "highlighted" : ""}`}
+                        data-message-id={message.id}
+                      >
+                        <div className="avatar" style={{ backgroundColor: accent }}>
+                          {message.kind === "user" ? getDisplayMessageRoleName(message) : message.roleName.slice(0, 1).toUpperCase()}
+                        </div>
+                        <div className="bubble-wrap">
+                          <div className="message-meta">
+                            <strong>{getDisplayMessageRoleName(message)}</strong>
+                            <span>{messageMeta}</span>
+                            <button
+                              type="button"
+                              className="message-reply-button"
+                              data-testid={`reply-button-${message.id}`}
+                              onClick={() => setPendingReplyToMessageId(message.id)}
+                            >
+                              {t(UI_COPY.reply)}
+                            </button>
                           </div>
-                          <div className="bubble-wrap">
-                            <div className="message-meta">
-                              <strong>{getDisplayMessageRoleName(message)}</strong>
-                              <span>{messageMeta}</span>
-                              <button
-                                type="button"
-                                className="message-reply-button"
-                                data-testid={`reply-button-${message.id}`}
-                                onClick={() => setPendingReplyToMessageId(message.id)}
-                              >
-                                {t(UI_COPY.reply)}
-                              </button>
-                            </div>
-                            <div className="message-bubble">
-                              {renderReplyPreview(message)}
-                              {renderRequiredReplyNotice(message)}
-                              {message.content}
-                            </div>
+                          <div className="message-bubble">
+                            {renderReplyPreview(message)}
+                            {renderRequiredReplyNotice(message)}
+                            {message.content}
                           </div>
-                        </article>
-                      );
-                    })
-                  ) : (
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {loadingRoleSnapshot ? (
+                    <article
+                      className={`chat-message typing-message kind-${loadingRoleSnapshot.kind}`}
+                      data-testid={`typing-indicator-${loadingRoleSnapshot.roleId}`}
+                    >
+                      <div className="avatar" style={{ backgroundColor: loadingRoleSnapshot.accentColor }}>
+                        {loadingRoleSnapshot.roleName.slice(0, 1).toUpperCase()}
+                      </div>
+                      <div className="bubble-wrap">
+                        <div className="message-meta">
+                          <strong>{loadingRoleSnapshot.roleName}</strong>
+                          <span className="typing-status">...</span>
+                        </div>
+                        <div className="message-bubble typing-bubble">
+                          <div className="typing-dots" style={{ color: loadingRoleSnapshot.accentColor }} aria-hidden="true">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                        </div>
+                      </div>
+                    </article>
+                  ) : null}
+                  {draftRoom.messages.length === 0 && !loadingRoleSnapshot ? (
                     <div className="empty-chat">
                       <p>{t(UI_COPY.noTranscriptTitle)}</p>
                       <p>{t(UI_COPY.noTranscriptBody)}</p>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
