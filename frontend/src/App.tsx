@@ -418,6 +418,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [busyLabel, setBusyLabel] = useState("");
   const [error, setError] = useState("");
+  const [stepPending, setStepPending] = useState(false);
   const [loadingRoleSnapshot, setLoadingRoleSnapshot] = useState<LoadingRoleSnapshot | null>(null);
   const [selectedCustomResearchDirectionId, setSelectedCustomResearchDirectionId] = useState<string | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
@@ -560,6 +561,21 @@ function App() {
   );
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
+  const visibleLoadingRoleSnapshot = useMemo(() => {
+    if (loadingRoleSnapshot) {
+      return loadingRoleSnapshot;
+    }
+    if (!draftRoom) {
+      return null;
+    }
+    if (draftRoom.state.status === "completed" || draftRoom.state.status === "stopped") {
+      return null;
+    }
+    if (!stepPending && !autoRunning) {
+      return null;
+    }
+    return toLoadingRoleSnapshot(predictNextSpeakingRole(draftRoom));
+  }, [autoRunning, draftRoom, loadingRoleSnapshot, stepPending]);
   const activeRoleSummaryText = useMemo(() => {
     if (activeRoles.length === 0) {
       return t(UI_COPY.roleStripEmpty);
@@ -972,29 +988,25 @@ function App() {
     return saved;
   }
 
-  async function stepRoomWithSpeakingIndicator(room: DiscussionRoom): Promise<DiscussionRoom> {
-    setLoadingRoleSnapshot(toLoadingRoleSnapshot(predictNextSpeakingRole(room)));
-
+  async function runWithSpeakingIndicator<T>(previewRoom: DiscussionRoom | null, task: () => Promise<T>): Promise<T> {
+    setStepPending(true);
+    setLoadingRoleSnapshot(toLoadingRoleSnapshot(previewRoom ? predictNextSpeakingRole(previewRoom) : null));
     try {
-      return await api.stepRoom(room.id);
+      return await task();
     } finally {
       setLoadingRoleSnapshot(null);
+      setStepPending(false);
     }
   }
 
   async function stepDiscussion(options: { stopAutoRunning: boolean; withTaskLabel: boolean }): Promise<void> {
     const execute = async () => {
-      setLoadingRoleSnapshot(toLoadingRoleSnapshot(draftRoom ? predictNextSpeakingRole(draftRoom) : null));
-      const room = await ensureRunningRoom();
-      const stepped = await stepRoomWithSpeakingIndicator(room);
-      syncRoom(stepped);
-    };
-    const executeSafely = async () => {
-      try {
-        await execute();
-      } finally {
-        setLoadingRoleSnapshot(null);
-      }
+      await runWithSpeakingIndicator(draftRoom, async () => {
+        const room = await ensureRunningRoom();
+        setLoadingRoleSnapshot(toLoadingRoleSnapshot(predictNextSpeakingRole(room)));
+        const stepped = await api.stepRoom(room.id);
+        syncRoom(stepped);
+      });
     };
 
     if (options.stopAutoRunning) {
@@ -1002,11 +1014,11 @@ function App() {
     }
 
     if (options.withTaskLabel) {
-      await runTask(t(UI_COPY.step), executeSafely);
+      await runTask(t(UI_COPY.step), execute);
       return;
     }
 
-    await executeSafely();
+    await execute();
   }
 
   async function performAutoStep(): Promise<void> {
@@ -1278,8 +1290,10 @@ function App() {
       setPendingReplyToMessageId(null);
 
       if (room.state.pendingRequiredReplies.length > 0) {
-        const stepped = await stepRoomWithSpeakingIndicator(room);
-        syncRoom(stepped);
+        await runWithSpeakingIndicator(room, async () => {
+          const stepped = await api.stepRoom(room.id);
+          syncRoom(stepped);
+        });
       }
     });
   }
@@ -2312,21 +2326,21 @@ function App() {
                       </article>
                     );
                   })}
-                  {loadingRoleSnapshot ? (
+                  {visibleLoadingRoleSnapshot ? (
                     <article
-                      className={`chat-message typing-message kind-${loadingRoleSnapshot.kind}`}
-                      data-testid={`typing-indicator-${loadingRoleSnapshot.roleId}`}
+                      className={`chat-message typing-message kind-${visibleLoadingRoleSnapshot.kind}`}
+                      data-testid={`typing-indicator-${visibleLoadingRoleSnapshot.roleId}`}
                     >
-                      <div className="avatar" style={{ backgroundColor: loadingRoleSnapshot.accentColor }}>
-                        {loadingRoleSnapshot.roleName.slice(0, 1).toUpperCase()}
+                      <div className="avatar" style={{ backgroundColor: visibleLoadingRoleSnapshot.accentColor }}>
+                        {visibleLoadingRoleSnapshot.roleName.slice(0, 1).toUpperCase()}
                       </div>
                       <div className="bubble-wrap">
                         <div className="message-meta">
-                          <strong>{loadingRoleSnapshot.roleName}</strong>
+                          <strong>{visibleLoadingRoleSnapshot.roleName}</strong>
                           <span className="typing-status">...</span>
                         </div>
                         <div className="message-bubble typing-bubble">
-                          <div className="typing-dots" style={{ color: loadingRoleSnapshot.accentColor }} aria-hidden="true">
+                          <div className="typing-dots" style={{ color: visibleLoadingRoleSnapshot.accentColor }} aria-hidden="true">
                             <span />
                             <span />
                             <span />
@@ -2335,7 +2349,7 @@ function App() {
                       </div>
                     </article>
                   ) : null}
-                  {draftRoom.messages.length === 0 && !loadingRoleSnapshot ? (
+                  {draftRoom.messages.length === 0 && !visibleLoadingRoleSnapshot ? (
                     <div className="empty-chat">
                       <p>{t(UI_COPY.noTranscriptTitle)}</p>
                       <p>{t(UI_COPY.noTranscriptBody)}</p>
