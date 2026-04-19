@@ -55,9 +55,12 @@ code {
 }
 
 .app-shell {
+  --ui-scale: 1;
+  --chat-font-scale: 1;
   height: 100vh;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 430px;
+  font-size: calc(14px * var(--ui-scale));
   overflow: hidden;
 }
 
@@ -528,6 +531,51 @@ code {
   min-height: 0;
 }
 
+.display-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(10px * var(--ui-scale));
+  padding: calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale));
+  border-radius: calc(18px * var(--ui-scale));
+  border: 1px solid rgba(44, 54, 68, 0.08);
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.display-control-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(8px * var(--ui-scale));
+}
+
+.display-control-label {
+  color: #617080;
+  font-size: calc(12px * var(--ui-scale));
+  font-weight: 600;
+}
+
+.display-control-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--ui-scale));
+}
+
+.display-scale-button {
+  padding: calc(6px * var(--ui-scale)) calc(10px * var(--ui-scale));
+  border-radius: 999px;
+  border: none;
+  background: rgba(29, 40, 54, 0.08);
+  color: #253240;
+  font-size: calc(12px * var(--ui-scale));
+  font-weight: 600;
+  transition: transform 120ms ease, opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.display-scale-button.active {
+  background: #1f516b;
+  color: #fffef7;
+}
+
 .chat-panel-header,
 .insight-card-header,
 .panel-header {
@@ -663,6 +711,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  font-size: calc(14px * var(--chat-font-scale));
   min-height: 0;
 }
 
@@ -704,7 +753,7 @@ code {
   align-items: center;
   flex-wrap: wrap;
   margin-bottom: 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--chat-font-scale));
   color: #768292;
 }
 
@@ -714,7 +763,7 @@ code {
   padding: 0;
   background: transparent;
   color: #4a637d;
-  font-size: 12px;
+  font-size: calc(12px * var(--chat-font-scale));
   font-weight: 700;
 }
 
@@ -747,11 +796,11 @@ code {
 }
 
 .reply-preview strong {
-  font-size: 12px;
+  font-size: calc(12px * var(--chat-font-scale));
 }
 
 .reply-preview span {
-  font-size: 13px;
+  font-size: calc(13px * var(--chat-font-scale));
   color: #5e6d7b;
 }
 
@@ -764,7 +813,7 @@ code {
   border-radius: 999px;
   background: rgba(31, 81, 107, 0.08);
   color: #24475e;
-  font-size: 12px;
+  font-size: calc(12px * var(--chat-font-scale));
 }
 
 .required-reply-chip strong {
@@ -963,7 +1012,8 @@ code {
 .ghost-button:hover,
 .danger-button:hover,
 .text-button:hover,
-.section-toggle:hover {
+.section-toggle:hover,
+.display-scale-button:hover {
   transform: translateY(-1px);
 }
 
@@ -1211,6 +1261,168 @@ button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
   transform: none !important;
+}
+
+.left-rail,
+.studio {
+  padding: calc(24px * var(--ui-scale)) calc(20px * var(--ui-scale));
+}
+
+.stage {
+  gap: calc(10px * var(--ui-scale));
+  padding: calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
+}
+
+.topic-summary-bar,
+.stage-header,
+.objective-card,
+.role-section,
+.chat-panel,
+.composer-card,
+.document-focus-panel,
+.summary-spotlight,
+.studio-section,
+.editor-card,
+.insight-section {
+  border-radius: calc(24px * var(--ui-scale));
+}
+
+.stage-header {
+  gap: calc(12px * var(--ui-scale));
+  padding: calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
+}
+
+.topic-summary-bar {
+  gap: calc(12px * var(--ui-scale));
+  padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));
+}
+
+.objective-strip,
+.chat-layout,
+.toolbar,
+.inline-actions,
+.chat-stats,
+.role-strip {
+  gap: calc(8px * var(--ui-scale));
+}
+
+.objective-card,
+.document-focus-panel,
+.role-section,
+.summary-spotlight {
+  padding: calc(12px * var(--ui-scale)) calc(14px * var(--ui-scale));
+}
+
+.chat-panel,
+.composer-card {
+  gap: calc(8px * var(--ui-scale));
+  padding: calc(12px * var(--ui-scale));
+}
+
+.chat-panel-top {
+  gap: calc(8px * var(--ui-scale));
+}
+
+.room-card {
+  gap: calc(6px * var(--ui-scale));
+  padding: calc(14px * var(--ui-scale));
+}
+
+.room-card.mini {
+  min-height: calc(84px * var(--ui-scale));
+  padding: calc(12px * var(--ui-scale)) calc(8px * var(--ui-scale));
+}
+
+.role-pill {
+  min-width: calc(176px * var(--ui-scale));
+  gap: calc(4px * var(--ui-scale));
+  padding: calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale));
+}
+
+.ghost-button,
+.primary-button,
+.danger-button,
+.studio-tabs button {
+  padding: calc(10px * var(--ui-scale)) calc(16px * var(--ui-scale));
+  font-size: calc(14px * var(--ui-scale));
+}
+
+.danger-button.subtle {
+  padding-inline: calc(12px * var(--ui-scale));
+}
+
+.text-button,
+.section-toggle {
+  font-size: calc(12px * var(--ui-scale));
+}
+
+input,
+textarea,
+select {
+  padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale));
+  border-radius: calc(14px * var(--ui-scale));
+  font-size: calc(14px * var(--ui-scale));
+}
+
+input[type="color"] {
+  min-height: calc(44px * var(--ui-scale));
+  padding: calc(4px * var(--ui-scale));
+}
+
+.room-title {
+  font-size: calc(16px * var(--ui-scale));
+}
+
+.room-meta,
+.helper-text,
+.field-note,
+.small-text,
+.chat-stats,
+.topic-summary-room,
+.strip-label,
+.eyebrow,
+.display-control-label,
+.busy-chip,
+.status-pill,
+.insight-meta {
+  font-size: calc(12px * var(--ui-scale));
+}
+
+.topic-summary-text {
+  font-size: calc(15px * var(--ui-scale));
+}
+
+.room-avatar,
+.avatar {
+  width: calc(42px * var(--ui-scale));
+  height: calc(42px * var(--ui-scale));
+  border-radius: calc(16px * var(--ui-scale));
+  font-size: calc(12px * var(--ui-scale));
+}
+
+.message-bubble {
+  padding: calc(12px * var(--ui-scale)) calc(14px * var(--ui-scale));
+  border-radius: calc(8px * var(--ui-scale)) calc(18px * var(--ui-scale)) calc(18px * var(--ui-scale))
+    calc(18px * var(--ui-scale));
+}
+
+.reply-preview,
+.composer-reply-card {
+  padding: calc(8px * var(--ui-scale)) calc(10px * var(--ui-scale));
+  border-radius: calc(14px * var(--ui-scale));
+}
+
+.required-reply-chip,
+.save-chip,
+.busy-chip,
+.status-pill,
+.section-toggle {
+  border-radius: 999px;
+}
+
+.composer-card textarea {
+  min-height: calc(52px * var(--ui-scale));
+  max-height: calc(108px * var(--ui-scale));
 }
 
 .error-banner {

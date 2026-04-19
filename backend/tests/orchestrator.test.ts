@@ -53,7 +53,7 @@ function createRoom(options: {
 
   room.roles = options.includeRecorder === false ? participants : [...participants, createRecorder(baseProvider)];
   room.checkpointEveryRound = options.checkpointEveryRound ?? true;
-  room.checkpointIntervalExchanges = room.checkpointEveryRound ? 1 : 0;
+  room.checkpointIntervalRounds = room.checkpointEveryRound ? 1 : 0;
   room.maxRounds = options.maxRounds ?? 3;
   return room;
 }
@@ -302,7 +302,7 @@ test("checkpoint interval of two exchanges delays recorder notes until every sec
     checkpointEveryRound: true,
     maxRounds: 2,
   });
-  room.checkpointIntervalExchanges = 2;
+  room.checkpointIntervalRounds = 2;
 
   const restoreFetch = installFetchSequence([
     { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
@@ -338,7 +338,7 @@ test("checkpoint interval zero disables mid-discussion notes but still produces 
     checkpointEveryRound: false,
     maxRounds: 1,
   });
-  room.checkpointIntervalExchanges = 0;
+  room.checkpointIntervalRounds = 0;
 
   const restoreFetch = installFetchSequence([
     { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
@@ -355,6 +355,83 @@ test("checkpoint interval zero disables mid-discussion notes but still produces 
     assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 0);
     assert.equal(room.summary.insights.filter((insight) => insight.kind === "final").length, 1);
     assert.equal(room.state.status, "completed");
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("two enabled participants complete one round only after both have spoken", async () => {
+  const room = createRoom({
+    providerType: "custom-http",
+    includeRecorder: false,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opens round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor completes round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Reviewer opens round two.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    const participantMessages = room.messages.filter((message) => message.kind === "participant");
+    assert.deepEqual(participantMessages.map((message) => message.round), [1, 1]);
+    assert.equal(room.state.completedRoundCount, 1);
+    assert.equal(room.state.currentRound, 1);
+
+    await stepDiscussion(room);
+    const thirdMessage = room.messages.at(-1);
+    assert.ok(thirdMessage);
+    assert.equal(thirdMessage.round, 2);
+    assert.equal(room.state.currentRound, 2);
+    assert.equal(room.state.completedRoundCount, 1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("three enabled participants do not finish a round until the third distinct participant speaks", async () => {
+  const room = createRoom({
+    participantNames: [
+      { name: "Reviewer", templateKey: "reviewer" },
+      { name: "Advisor", templateKey: "advisor" },
+      { name: "Methodologist", templateKey: "methodologist" },
+    ],
+    providerType: "custom-http",
+    includeRecorder: false,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opens round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor follows in round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Methodologist closes round one.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    assert.equal(room.state.completedRoundCount, 0);
+    assert.deepEqual(
+      room.messages.filter((message) => message.kind === "participant").map((message) => message.round),
+      [1, 1],
+    );
+
+    await stepDiscussion(room);
+
+    assert.equal(room.state.completedRoundCount, 1);
+    assert.deepEqual(
+      room.messages.filter((message) => message.kind === "participant").map((message) => message.round),
+      [1, 1, 1],
+    );
   } finally {
     restoreFetch();
   }

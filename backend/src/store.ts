@@ -279,6 +279,7 @@ function normalizeSummary(input: unknown): DiscussionSummary {
 
 function normalizeState(input: Partial<DiscussionState> | undefined, fallback: DiscussionState): DiscussionState {
   const activeExchange = normalizeActiveExchange(input?.activeExchange);
+  const legacyInput = input as Partial<DiscussionState> | undefined;
   const spokenParticipantRoleIds = Array.isArray(input?.spokenParticipantRoleIds)
     ? input.spokenParticipantRoleIds.filter((roleId): roleId is string => typeof roleId === "string" && roleId.trim().length > 0)
     : fallback.spokenParticipantRoleIds;
@@ -292,18 +293,36 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
     ...fallback,
     ...(input ?? {}),
     currentRound:
-      activeExchange?.sequenceNumber ??
-      (typeof input?.currentRound === "number" && Number.isFinite(input.currentRound) ? Math.max(0, input.currentRound) : fallback.currentRound),
+      typeof input?.currentRound === "number" && Number.isFinite(input.currentRound)
+        ? Math.max(0, input.currentRound)
+        : activeExchange?.sequenceNumber ?? fallback.currentRound,
+    completedRoundCount:
+      typeof input?.completedRoundCount === "number" && Number.isFinite(input.completedRoundCount)
+        ? Math.max(0, Math.floor(input.completedRoundCount))
+        : typeof legacyInput?.completedExchangeCount === "number" && Number.isFinite(legacyInput.completedExchangeCount)
+          ? Math.max(0, Math.floor(legacyInput.completedExchangeCount))
+          : fallback.completedRoundCount,
+    lastCheckpointedRoundCount:
+      typeof input?.lastCheckpointedRoundCount === "number" && Number.isFinite(input.lastCheckpointedRoundCount)
+        ? Math.max(0, Math.floor(input.lastCheckpointedRoundCount))
+        : typeof legacyInput?.lastCheckpointedExchangeCount === "number" &&
+            Number.isFinite(legacyInput.lastCheckpointedExchangeCount)
+          ? Math.max(0, Math.floor(legacyInput.lastCheckpointedExchangeCount))
+          : fallback.lastCheckpointedRoundCount,
     completedExchangeCount:
-      typeof input?.completedExchangeCount === "number" && Number.isFinite(input.completedExchangeCount)
-        ? Math.max(0, Math.floor(input.completedExchangeCount))
-        : typeof input?.currentRound === "number" && Number.isFinite(input.currentRound) && !activeExchange
-          ? Math.max(0, Math.floor(input.currentRound))
-        : fallback.completedExchangeCount,
+      typeof legacyInput?.completedExchangeCount === "number" && Number.isFinite(legacyInput.completedExchangeCount)
+        ? Math.max(0, Math.floor(legacyInput.completedExchangeCount))
+        : typeof input?.completedRoundCount === "number" && Number.isFinite(input.completedRoundCount)
+          ? Math.max(0, Math.floor(input.completedRoundCount))
+          : typeof input?.currentRound === "number" && Number.isFinite(input.currentRound) && !activeExchange
+            ? Math.max(0, Math.floor(input.currentRound))
+            : fallback.completedExchangeCount,
     lastCheckpointedExchangeCount:
-      typeof input?.lastCheckpointedExchangeCount === "number" && Number.isFinite(input.lastCheckpointedExchangeCount)
-        ? Math.max(0, Math.floor(input.lastCheckpointedExchangeCount))
-        : fallback.lastCheckpointedExchangeCount,
+      typeof legacyInput?.lastCheckpointedExchangeCount === "number" && Number.isFinite(legacyInput.lastCheckpointedExchangeCount)
+        ? Math.max(0, Math.floor(legacyInput.lastCheckpointedExchangeCount))
+        : typeof input?.lastCheckpointedRoundCount === "number" && Number.isFinite(input.lastCheckpointedRoundCount)
+          ? Math.max(0, Math.floor(input.lastCheckpointedRoundCount))
+          : fallback.lastCheckpointedExchangeCount,
     nextSpeakerIndex:
       typeof input?.nextSpeakerIndex === "number" && Number.isFinite(input.nextSpeakerIndex)
         ? input.nextSpeakerIndex
@@ -319,6 +338,7 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
 
 function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
   const base = createBlankRoom();
+  const legacyInput = input as Partial<DiscussionRoom> & { checkpointIntervalExchanges?: number };
   const createdAt = input.createdAt ?? base.createdAt;
   const normalizedDocumentAsset = normalizeDocumentAsset(input.documentAsset);
   const normalizedDocumentSegments = Array.isArray(input.documentSegments)
@@ -359,14 +379,16 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
         : base.maxRounds,
     checkpointEveryRound:
       typeof input.checkpointEveryRound === "boolean" ? input.checkpointEveryRound : base.checkpointEveryRound,
-    checkpointIntervalExchanges:
-      typeof input.checkpointIntervalExchanges === "number" && Number.isFinite(input.checkpointIntervalExchanges)
-        ? Math.max(0, Math.min(12, Math.floor(input.checkpointIntervalExchanges)))
+    checkpointIntervalRounds:
+      typeof legacyInput.checkpointIntervalRounds === "number" && Number.isFinite(legacyInput.checkpointIntervalRounds)
+        ? Math.max(0, Math.min(12, Math.floor(legacyInput.checkpointIntervalRounds)))
+        : typeof legacyInput.checkpointIntervalExchanges === "number" && Number.isFinite(legacyInput.checkpointIntervalExchanges)
+          ? Math.max(0, Math.min(12, Math.floor(legacyInput.checkpointIntervalExchanges)))
         : typeof input.checkpointEveryRound === "boolean"
           ? input.checkpointEveryRound
             ? 1
             : 0
-          : base.checkpointIntervalExchanges,
+          : base.checkpointIntervalRounds,
     documentAsset: normalizedDocumentAsset,
     documentSegments: normalizedDocumentSegments,
     documentOutline: normalizedDocumentOutline,

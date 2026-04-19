@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import {
   createLocalizedRoomSeed,
@@ -40,10 +40,24 @@ import {
   ProviderType,
   ResearchDirectionPreset,
   RoleTemplateKey,
+  ChatFontPreset,
+  UiScalePreset,
   UiLocale,
 } from "./types";
 
 type StudioTab = "room" | "roles" | "presets";
+
+const UI_SCALE_FACTORS: Record<UiScalePreset, number> = {
+  compact: 0.9,
+  default: 1,
+  comfortable: 1.1,
+};
+
+const CHAT_FONT_FACTORS: Record<ChatFontPreset, number> = {
+  small: 0.92,
+  medium: 1,
+  large: 1.12,
+};
 
 function cloneRoom(room: DiscussionRoom): DiscussionRoom {
   return structuredClone(room);
@@ -60,6 +74,16 @@ function readBooleanStorage(key: string, fallback: boolean): boolean {
 function readLocaleStorage(): UiLocale {
   const value = window.localStorage.getItem(STORAGE_KEYS.locale);
   return value === "en-US" ? "en-US" : "zh-CN";
+}
+
+function readUiScalePresetStorage(): UiScalePreset {
+  const value = window.localStorage.getItem(STORAGE_KEYS.uiScalePreset);
+  return value === "compact" || value === "comfortable" ? value : "default";
+}
+
+function readChatFontPresetStorage(): ChatFontPreset {
+  const value = window.localStorage.getItem(STORAGE_KEYS.chatFontPreset);
+  return value === "small" || value === "large" ? value : "medium";
 }
 
 function formatWhen(timestamp: string, locale: UiLocale): string {
@@ -180,6 +204,8 @@ function App() {
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [studioTab, setStudioTab] = useState<StudioTab>("roles");
   const [locale, setLocale] = useState<UiLocale>(() => readLocaleStorage());
+  const [uiScalePreset, setUiScalePreset] = useState<UiScalePreset>(() => readUiScalePresetStorage());
+  const [chatFontPreset, setChatFontPreset] = useState<ChatFontPreset>(() => readChatFontPresetStorage());
   const [roomRailCollapsed, setRoomRailCollapsed] = useState<boolean>(() =>
     readBooleanStorage(STORAGE_KEYS.roomRailCollapsed, false),
   );
@@ -341,8 +367,16 @@ function App() {
     [draftRoom],
   );
   const displayedExchangeNumber = useMemo(
-    () => draftRoom?.state.activeExchange?.sequenceNumber ?? draftRoom?.state.completedExchangeCount ?? 0,
+    () => draftRoom?.state.currentRound ?? 0,
     [draftRoom],
+  );
+  const appScaleStyle = useMemo(
+    () =>
+      ({
+        "--ui-scale": String(UI_SCALE_FACTORS[uiScalePreset]),
+        "--chat-font-scale": String(CHAT_FONT_FACTORS[chatFontPreset]),
+      }) as CSSProperties,
+    [uiScalePreset, chatFontPreset],
   );
 
   const t = <T extends { "zh-CN": string; "en-US": string }>(value: T): string => getText(locale, value);
@@ -518,6 +552,14 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.locale, locale);
   }, [locale]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.uiScalePreset, uiScalePreset);
+  }, [uiScalePreset]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.chatFontPreset, chatFontPreset);
+  }, [chatFontPreset]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.roomRailCollapsed, String(roomRailCollapsed));
@@ -1617,6 +1659,7 @@ function App() {
   return (
     <div
       className={`app-shell ${studioOpen ? "" : "studio-hidden"} ${roomRailCollapsed ? "room-rail-collapsed" : ""}`}
+      style={appScaleStyle}
     >
       <input
         ref={documentInputRef}
@@ -1898,6 +1941,73 @@ function App() {
                     <button className="danger-button" onClick={() => void handleStop()} disabled={Boolean(busyLabel)}>
                       {t(UI_COPY.stop)}
                     </button>
+                  </div>
+                </div>
+
+                <div className="display-controls" data-testid="display-controls">
+                  <div className="display-control-group">
+                    <span className="display-control-label">{t(UI_COPY.uiScaleLabel)}</span>
+                    <div className="display-control-options">
+                      <button
+                        type="button"
+                        className={`display-scale-button ${uiScalePreset === "compact" ? "active" : ""}`}
+                        data-testid="ui-scale-compact"
+                        aria-pressed={uiScalePreset === "compact"}
+                        onClick={() => setUiScalePreset("compact")}
+                      >
+                        {t(UI_COPY.uiScaleCompact)}
+                      </button>
+                      <button
+                        type="button"
+                        className={`display-scale-button ${uiScalePreset === "default" ? "active" : ""}`}
+                        data-testid="ui-scale-default"
+                        aria-pressed={uiScalePreset === "default"}
+                        onClick={() => setUiScalePreset("default")}
+                      >
+                        {t(UI_COPY.uiScaleDefault)}
+                      </button>
+                      <button
+                        type="button"
+                        className={`display-scale-button ${uiScalePreset === "comfortable" ? "active" : ""}`}
+                        data-testid="ui-scale-comfortable"
+                        aria-pressed={uiScalePreset === "comfortable"}
+                        onClick={() => setUiScalePreset("comfortable")}
+                      >
+                        {t(UI_COPY.uiScaleComfortable)}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="display-control-group">
+                    <span className="display-control-label">{t(UI_COPY.chatFontLabel)}</span>
+                    <div className="display-control-options">
+                      <button
+                        type="button"
+                        className={`display-scale-button ${chatFontPreset === "small" ? "active" : ""}`}
+                        data-testid="chat-font-small"
+                        aria-pressed={chatFontPreset === "small"}
+                        onClick={() => setChatFontPreset("small")}
+                      >
+                        {t(UI_COPY.chatFontSmall)}
+                      </button>
+                      <button
+                        type="button"
+                        className={`display-scale-button ${chatFontPreset === "medium" ? "active" : ""}`}
+                        data-testid="chat-font-medium"
+                        aria-pressed={chatFontPreset === "medium"}
+                        onClick={() => setChatFontPreset("medium")}
+                      >
+                        {t(UI_COPY.chatFontMedium)}
+                      </button>
+                      <button
+                        type="button"
+                        className={`display-scale-button ${chatFontPreset === "large" ? "active" : ""}`}
+                        data-testid="chat-font-large"
+                        aria-pressed={chatFontPreset === "large"}
+                        onClick={() => setChatFontPreset("large")}
+                      >
+                        {t(UI_COPY.chatFontLarge)}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2423,7 +2533,7 @@ function App() {
                 <label>
                   {t(UI_COPY.checkpointIntervalLabel)}
                   <NumericInput
-                    value={draftRoom.checkpointIntervalExchanges}
+                    value={draftRoom.checkpointIntervalRounds}
                     min={0}
                     max={12}
                     step={1}
@@ -2433,7 +2543,7 @@ function App() {
                         current
                           ? {
                               ...current,
-                              checkpointIntervalExchanges: Math.round(value),
+                              checkpointIntervalRounds: Math.round(value),
                               checkpointEveryRound: Math.round(value) > 0,
                             }
                           : current,

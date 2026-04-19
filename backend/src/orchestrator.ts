@@ -63,8 +63,37 @@ function appendInsight(room: DiscussionRoom, insight: Omit<InsightEntry, "id" | 
 }
 
 function syncLegacySpeakerState(room: DiscussionRoom): void {
-  room.state.spokenParticipantRoleIds = room.state.activeExchange?.respondedRoleIds.slice() ?? [];
   room.state.nextSpeakerIndex = 0;
+}
+
+function hasCoveredCurrentRound(room: DiscussionRoom, participants = getParticipants(room)): boolean {
+  if (participants.length === 0) {
+    return false;
+  }
+  return participants.every((role) => room.state.spokenParticipantRoleIds.includes(role.id));
+}
+
+function prepareCurrentRoundForParticipantMessage(room: DiscussionRoom, participants = getParticipants(room)): void {
+  if (room.state.currentRound <= 0) {
+    room.state.currentRound = Math.max(1, room.state.completedRoundCount + 1);
+  }
+
+  if (!hasCoveredCurrentRound(room, participants)) {
+    return;
+  }
+
+  room.state.spokenParticipantRoleIds = [];
+  room.state.currentRound = room.state.completedRoundCount + 1;
+}
+
+function updateRoundAfterParticipantMessage(room: DiscussionRoom, speaker: DiscussionRole, participants = getParticipants(room)): void {
+  if (!room.state.spokenParticipantRoleIds.includes(speaker.id)) {
+    room.state.spokenParticipantRoleIds.push(speaker.id);
+  }
+
+  if (hasCoveredCurrentRound(room, participants)) {
+    room.state.completedRoundCount = Math.max(room.state.completedRoundCount, room.state.currentRound);
+  }
 }
 
 function getNextExchangeSequenceNumber(room: DiscussionRoom): number {
@@ -76,7 +105,6 @@ function setActiveExchange(
   params: Omit<ActiveExchange, "id" | "sequenceNumber">,
 ): void {
   const sequenceNumber = getNextExchangeSequenceNumber(room);
-  room.state.currentRound = sequenceNumber;
   room.state.phase = "participants";
   room.state.activeExchange = {
     id: randomUUID(),
@@ -112,17 +140,16 @@ function finalizeCompletedExchange(room: DiscussionRoom): number {
   }
 
   room.state.completedExchangeCount += 1;
-  room.state.currentRound = exchange.sequenceNumber;
   clearActiveExchange(room);
   return room.state.completedExchangeCount;
 }
 
 function shouldEmitCheckpoint(room: DiscussionRoom): boolean {
   return (
-    room.checkpointIntervalExchanges > 0 &&
-    room.state.completedExchangeCount > 0 &&
-    room.state.completedExchangeCount % room.checkpointIntervalExchanges === 0 &&
-    room.state.completedExchangeCount > room.state.lastCheckpointedExchangeCount
+    room.checkpointIntervalRounds > 0 &&
+    room.state.completedRoundCount > 0 &&
+    room.state.completedRoundCount % room.checkpointIntervalRounds === 0 &&
+    room.state.completedRoundCount > room.state.lastCheckpointedRoundCount
   );
 }
 
@@ -190,7 +217,7 @@ function completeWithoutRecorder(room: DiscussionRoom): DiscussionRoom {
     title: "Final Conclusion",
     content:
       "The discussion ended without a recorder role. Keep the transcript, but add a recorder if you want a cleaner high-signal conclusion.",
-    round: room.state.completedExchangeCount > 0 ? room.state.completedExchangeCount : room.state.currentRound,
+    round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
     saved: true,
   });
   room.state.status = "completed";
@@ -371,6 +398,8 @@ async function emitParticipantMessage(
   speaker: DiscussionRole,
   options: { forcedReply?: PendingRequiredReply | null; selectionReason: string },
 ): Promise<DiscussionRoom> {
+  const participants = getParticipants(room);
+  prepareCurrentRoundForParticipantMessage(room, participants);
   const reply = await generateParticipantContent(room, speaker, {
     forcedReply: options.forcedReply ?? null,
     selectionReason: options.selectionReason,
@@ -392,11 +421,12 @@ async function emitParticipantMessage(
     ...replyMeta,
     requiredReplyRoleId: requiredReplyTarget?.id ?? null,
     requiredReplyRoleName: requiredReplyTarget?.name ?? null,
-    round: room.state.activeExchange?.sequenceNumber ?? room.state.currentRound,
+    round: room.state.currentRound,
     turn: room.state.totalTurns,
   });
 
   updateExchangeAfterParticipantMessage(room, speaker, message);
+  updateRoundAfterParticipantMessage(room, speaker, participants);
 
   if (requiredReplyTarget) {
     enqueueRequiredReply(room, message.id, requiredReplyTarget, "participant-direct-request", "front");
@@ -457,7 +487,7 @@ export function addUserMessage(room: DiscussionRoom, content: string, replyToMes
     ...replyMeta,
     requiredReplyRoleId: requiredReplyTarget?.id ?? null,
     requiredReplyRoleName: requiredReplyTarget?.name ?? null,
-    round: room.state.status === "running" ? room.state.activeExchange?.sequenceNumber ?? room.state.currentRound : 0,
+    round: room.state.status === "running" ? room.state.currentRound : 0,
     turn: room.state.totalTurns,
   });
 
@@ -491,6 +521,8 @@ export function startDiscussion(room: DiscussionRoom): DiscussionRoom {
     status: "running",
     phase: "participants",
     currentRound: 1,
+    completedRoundCount: 0,
+    lastCheckpointedRoundCount: 0,
     completedExchangeCount: 0,
     lastCheckpointedExchangeCount: 0,
     nextSpeakerIndex: 0,
@@ -599,7 +631,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
         continue;
       }
 
-      if (room.state.completedExchangeCount >= room.maxRounds) {
+      if (room.state.completedRoundCount >= room.maxRounds) {
         room.state.phase = "final";
         continue;
       }
@@ -610,7 +642,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
 
     if (room.state.phase === "recorder") {
       if (!recorder) {
-        if (room.state.completedExchangeCount >= room.maxRounds) {
+        if (room.state.completedRoundCount >= room.maxRounds) {
           room.state.phase = "final";
           continue;
         }
@@ -625,11 +657,12 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
 
       const insight = appendInsight(room, {
         kind: "checkpoint",
-        title: `Round ${room.state.completedExchangeCount} Notes`,
+        title: `Round ${room.state.completedRoundCount} Notes`,
         content: note,
-        round: room.state.completedExchangeCount,
+        round: room.state.completedRoundCount,
         saved: false,
       });
+      room.state.lastCheckpointedRoundCount = room.state.completedRoundCount;
       room.state.lastCheckpointedExchangeCount = room.state.completedExchangeCount;
 
       appendMessage(room, {
@@ -642,11 +675,11 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
         replyToExcerpt: null,
         requiredReplyRoleId: null,
         requiredReplyRoleName: null,
-        round: room.state.completedExchangeCount,
+        round: room.state.completedRoundCount,
         turn: room.state.totalTurns,
       });
 
-      if (room.state.completedExchangeCount >= room.maxRounds) {
+      if (room.state.completedRoundCount >= room.maxRounds) {
         room.state.phase = "final";
       } else {
         room.state.phase = "participants";
@@ -665,7 +698,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
           kind: "final",
           title: "Final Conclusion",
           content: finalNote,
-          round: Math.max(room.state.completedExchangeCount, room.state.currentRound),
+          round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
           saved: true,
         });
 
@@ -679,7 +712,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
           replyToExcerpt: null,
           requiredReplyRoleId: null,
           requiredReplyRoleName: null,
-          round: Math.max(room.state.completedExchangeCount, room.state.currentRound),
+          round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
           turn: room.state.totalTurns,
         });
       } else {

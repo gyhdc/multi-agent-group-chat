@@ -51,6 +51,7 @@ function normalizeRoles(roles: unknown): DiscussionRole[] {
 }
 
 function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>): DiscussionRoom {
+  const legacyIncoming = incoming as Partial<DiscussionRoom> & { checkpointIntervalExchanges?: number };
   return {
     ...existing,
     title: incoming.title?.trim() || existing.title,
@@ -71,10 +72,13 @@ function mergeRoom(existing: DiscussionRoom, incoming: Partial<DiscussionRoom>):
         : existing.maxRounds,
     checkpointEveryRound:
       typeof incoming.checkpointEveryRound === "boolean" ? incoming.checkpointEveryRound : existing.checkpointEveryRound,
-    checkpointIntervalExchanges:
-      typeof incoming.checkpointIntervalExchanges === "number" && Number.isFinite(incoming.checkpointIntervalExchanges)
-        ? Math.max(0, Math.min(12, Math.floor(incoming.checkpointIntervalExchanges)))
-        : existing.checkpointIntervalExchanges,
+    checkpointIntervalRounds:
+      typeof legacyIncoming.checkpointIntervalRounds === "number" && Number.isFinite(legacyIncoming.checkpointIntervalRounds)
+        ? Math.max(0, Math.min(12, Math.floor(legacyIncoming.checkpointIntervalRounds)))
+        : typeof legacyIncoming.checkpointIntervalExchanges === "number" &&
+            Number.isFinite(legacyIncoming.checkpointIntervalExchanges)
+          ? Math.max(0, Math.min(12, Math.floor(legacyIncoming.checkpointIntervalExchanges)))
+          : existing.checkpointIntervalRounds,
     roles: incoming.roles ? normalizeRoles(incoming.roles) : existing.roles,
     updatedAt: new Date().toISOString(),
   };

@@ -1,6 +1,8 @@
 export type ProviderType = "mock" | "openai-compatible" | "custom-http" | "codex-cli";
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type UiLocale = "zh-CN" | "en-US";
+export type UiScalePreset = "compact" | "default" | "comfortable";
+export type ChatFontPreset = "small" | "medium" | "large";
 export type DiscussionLanguage = "zh-CN" | "en-US";
 export type ResearchDirectionKey = string;
 export type DocumentFileKind = "pdf" | "docx" | "txt" | "md";
@@ -167,6 +169,8 @@ export interface DiscussionState {
   status: RoomStatus;
   phase: DiscussionPhase;
   currentRound: number;
+  completedRoundCount: number;
+  lastCheckpointedRoundCount: number;
   completedExchangeCount: number;
   lastCheckpointedExchangeCount: number;
   nextSpeakerIndex: number;
@@ -190,7 +194,7 @@ export interface DiscussionRoom {
   autoRunDelaySeconds: number;
   maxRounds: number;
   checkpointEveryRound: boolean;
-  checkpointIntervalExchanges: number;
+  checkpointIntervalRounds: number;
   documentAsset: RoomDocumentAsset | null;
   documentSegments: DocumentSegment[];
   documentOutline: DocumentOutlineNode[];
