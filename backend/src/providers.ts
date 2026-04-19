@@ -26,6 +26,9 @@ export interface ParticipantReply {
 interface ParticipantGenerationOptions {
   forcedReply?: PendingRequiredReply | null;
   selectionReason?: string;
+  deliveryMode?: "must-reply" | "prefer-reply" | "prefer-broadcast";
+  orderedReplyCandidateIds?: string[];
+  allowedForceReplyRoleIds?: string[];
 }
 
 interface TextPromptPayload {
@@ -78,8 +81,8 @@ function getRecentInsights(room: DiscussionRoom, limit = 4): InsightEntry[] {
   return room.summary.insights.slice(-limit);
 }
 
-function getReplyCandidates(room: DiscussionRoom, limit = 8): ReplyCandidate[] {
-  return room.messages
+function getReplyCandidates(room: DiscussionRoom, limit = 8, orderedIds?: string[]): ReplyCandidate[] {
+  const baseCandidates = room.messages
     .filter((message) => message.kind !== "system")
     .slice(-limit)
     .map((message) => ({
@@ -89,11 +92,24 @@ function getReplyCandidates(room: DiscussionRoom, limit = 8): ReplyCandidate[] {
       excerpt: trimText(message.content, 110),
       kind: message.kind,
     }));
+
+  if (!orderedIds || orderedIds.length === 0) {
+    return baseCandidates;
+  }
+
+  const candidateById = new Map(baseCandidates.map((candidate) => [candidate.id, candidate]));
+  const orderedCandidates = orderedIds
+    .map((candidateId) => candidateById.get(candidateId) ?? null)
+    .filter((candidate): candidate is ReplyCandidate => Boolean(candidate));
+  const seenIds = new Set(orderedCandidates.map((candidate) => candidate.id));
+
+  return [...orderedCandidates, ...baseCandidates.filter((candidate) => !seenIds.has(candidate.id))];
 }
 
-function getForceReplyCandidates(room: DiscussionRoom, role: DiscussionRole): ForceReplyCandidate[] {
+function getForceReplyCandidates(room: DiscussionRoom, role: DiscussionRole, allowedRoleIds?: string[]): ForceReplyCandidate[] {
   return getParticipants(room)
     .filter((participant) => participant.id !== role.id)
+    .filter((participant) => !allowedRoleIds || allowedRoleIds.includes(participant.id))
     .map((participant) => ({
       id: participant.id,
       roleName: participant.name,
@@ -226,6 +242,7 @@ function buildParticipantSystemPrompt(
   replyCandidates: ReplyCandidate[],
   forceReplyCandidates: ForceReplyCandidate[],
   forcedReply?: PendingRequiredReply | null,
+  deliveryMode?: ParticipantGenerationOptions["deliveryMode"],
   selectionReason?: string,
 ): string {
   const template = getRoleTemplateProfile(role.roleTemplateKey);
@@ -253,6 +270,12 @@ function buildParticipantSystemPrompt(
         "- Only do this when a direct response is genuinely necessary.",
       ];
 
+  const deliveryModeLines = [
+    "",
+    `Preferred delivery mode: ${deliveryMode ?? "prefer-broadcast"}`,
+    `Service-side selection reason: ${selectionReason ?? "natural continuation"}`,
+  ];
+
   return [
     "You are a serious scholar in a multi-party research discussion.",
     "This is not theatrical roleplay. Behave like a real expert with a real agenda and evidence standard.",
@@ -277,6 +300,7 @@ function buildParticipantSystemPrompt(
     "- Output valid JSON only.",
     `- replyToMessageId must be one candidate id or null. Reply candidate count: ${replyCandidates.length}.`,
     `- forceReplyRoleId must be one participant id or null. Force-reply candidate count: ${forceReplyCandidates.length}.`,
+    ...deliveryModeLines,
     ...mandatoryReplyLines,
     '- Output schema: {"replyToMessageId":"candidate-id-or-null","forceReplyRoleId":"participant-role-id-or-null","content":"your short message"}',
   ].join("\n");
@@ -288,6 +312,7 @@ function buildParticipantUserPrompt(
   replyCandidates: ReplyCandidate[],
   forceReplyCandidates: ForceReplyCandidate[],
   forcedReply?: PendingRequiredReply | null,
+  deliveryMode?: ParticipantGenerationOptions["deliveryMode"],
   selectionReason?: string,
 ): string {
   const recentMessages = getRecentMessages(room, 12)
@@ -322,6 +347,8 @@ function buildParticipantUserPrompt(
     recentMessages ? `Recent messages:\n${recentMessages}` : "Recent messages:\nNone yet.",
     `Reply candidates:\n${replyCandidateLines}`,
     `Force-reply candidates:\n${forceReplyCandidateLines}`,
+    `Delivery mode recommendation:\n${deliveryMode ?? "prefer-broadcast"}`,
+    `Selection reason:\n${selectionReason ?? "natural continuation"}`,
     [
       "Your task:",
       "1. Decide whether the latest user evidence changes the room's judgment.",
@@ -916,8 +943,8 @@ function buildParticipantPromptPayload(
   role: DiscussionRole,
   options: ParticipantGenerationOptions = {},
 ): TextPromptPayload {
-  const replyCandidates = getReplyCandidates(room);
-  const forceReplyCandidates = getForceReplyCandidates(room, role);
+  const replyCandidates = getReplyCandidates(room, 8, options.orderedReplyCandidateIds);
+  const forceReplyCandidates = getForceReplyCandidates(room, role, options.allowedForceReplyRoleIds);
   return {
     system: buildParticipantSystemPrompt(
       room,
@@ -925,9 +952,18 @@ function buildParticipantPromptPayload(
       replyCandidates,
       forceReplyCandidates,
       options.forcedReply,
+      options.deliveryMode,
       options.selectionReason,
     ),
-    user: buildParticipantUserPrompt(room, role, replyCandidates, forceReplyCandidates, options.forcedReply, options.selectionReason),
+    user: buildParticipantUserPrompt(
+      room,
+      role,
+      replyCandidates,
+      forceReplyCandidates,
+      options.forcedReply,
+      options.deliveryMode,
+      options.selectionReason,
+    ),
   };
 }
 

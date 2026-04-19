@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBlankRoom, createProviderConfig, normalizeRole } from "../src/defaults";
-import { addUserMessage, startDiscussion, stepDiscussion } from "../src/orchestrator";
+import { addUserMessage, startDiscussion, stepDiscussion, stopAndFinalizeDiscussion } from "../src/orchestrator";
 import { DiscussionRoom, DiscussionRole, ProviderConfig, RoleTemplateKey } from "../src/types";
 
 function createParticipant(name: string, templateKey: RoleTemplateKey, provider: ProviderConfig): DiscussionRole {
@@ -211,13 +211,12 @@ test("participant-forced reply opens a new exchange and still allows a third rol
     assert.ok(forcedReply);
     assert.equal(forcedReply.roleId, methodologist.id);
     assert.equal(forcedReply.replyToMessageId, advisorMessage.id);
-    assert.equal(room.state.activeExchange?.reason, "participant-forced-reply");
+    assert.equal(room.state.completedRoundCount, 1);
 
     await stepDiscussion(room);
     const nextNaturalSpeaker = room.messages.at(-1);
     assert.ok(nextNaturalSpeaker);
     assert.notEqual(nextNaturalSpeaker.roleId, methodologist.id);
-    assert.equal(room.state.activeExchange?.reason, "participant-forced-reply");
   } finally {
     restoreFetch();
   }
@@ -250,7 +249,7 @@ test("same role does not immediately speak twice when another participant is sti
   }
 });
 
-test("checkpoint and final happen only after the current exchange naturally settles", async () => {
+test("checkpoint is emitted immediately when a round completes, then final closes on the next step", async () => {
   const room = createRoom({
     providerType: "custom-http",
     includeRecorder: true,
@@ -275,15 +274,14 @@ test("checkpoint and final happen only after the current exchange naturally sett
 
     addUserMessage(room, "Please address this exact concern.", reviewerMessage.id);
     await stepDiscussion(room);
-    await stepDiscussion(room);
-
-    const beforeRecorderMessages = room.messages.filter((message) => message.kind === "recorder").length;
-    assert.equal(beforeRecorderMessages, 0);
+    assert.equal(room.messages.filter((message) => message.kind === "recorder").length, 0);
 
     await stepDiscussion(room);
     const checkpointMessage = room.messages.at(-1);
     assert.ok(checkpointMessage);
     assert.equal(checkpointMessage.kind, "recorder");
+    assert.equal(room.messages.at(-2)?.roleName, "Advisor");
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 1);
 
     await stepDiscussion(room);
     const finalMessage = room.messages.at(-1);
@@ -295,7 +293,7 @@ test("checkpoint and final happen only after the current exchange naturally sett
   }
 });
 
-test("checkpoint interval of two exchanges delays recorder notes until every second settled exchange", async () => {
+test("checkpoint interval of two rounds delays recorder notes until every second completed round", async () => {
   const room = createRoom({
     providerType: "custom-http",
     includeRecorder: true,
@@ -317,12 +315,12 @@ test("checkpoint interval of two exchanges delays recorder notes until every sec
     startDiscussion(room);
     await stepDiscussion(room);
     await stepDiscussion(room);
-    await stepDiscussion(room);
 
     assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 0);
 
     await stepDiscussion(room);
-    await stepDiscussion(room);
+    assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 0);
+
     await stepDiscussion(room);
 
     assert.equal(room.summary.insights.filter((insight) => insight.kind === "checkpoint").length, 1);
@@ -432,6 +430,147 @@ test("three enabled participants do not finish a round until the third distinct 
       room.messages.filter((message) => message.kind === "participant").map((message) => message.round),
       [1, 1, 1],
     );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("starvation debt rises for deferred speakers and forces the last pending participant to speak", async () => {
+  const room = createRoom({
+    participantNames: [
+      { name: "Reviewer", templateKey: "reviewer" },
+      { name: "Advisor", templateKey: "advisor" },
+      { name: "Methodologist", templateKey: "methodologist" },
+      { name: "Statistician", templateKey: "statistician" },
+    ],
+    providerType: "custom-http",
+    includeRecorder: false,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+
+  const statistician = room.roles[3];
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opens round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor follows round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Methodologist follows round one.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Statistician is finally forced in by starvation debt.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+    await stepDiscussion(room);
+
+    assert.deepEqual(room.state.roundPendingRoleIds, [statistician.id]);
+    assert.equal(room.state.participantActivity[statistician.id]?.starvationDebt, 3);
+
+    await stepDiscussion(room);
+    assert.equal(room.messages.at(-1)?.roleId, statistician.id);
+    assert.equal(room.state.completedRoundCount, 1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("service-side reply correction blocks two-person ping-pong and keeps the turn inside the pending pool", async () => {
+  const room = createRoom({
+    participantNames: [
+      { name: "Reviewer", templateKey: "reviewer" },
+      { name: "Advisor", templateKey: "advisor" },
+      { name: "Methodologist", templateKey: "methodologist" },
+      { name: "Statistician", templateKey: "statistician" },
+    ],
+    providerType: "custom-http",
+    includeRecorder: false,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+  const reviewer = room.roles[0];
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opens.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Advisor tries to drag the room back to Reviewer.", replyToMessageId: reviewer.id, forceReplyRoleId: reviewer.id },
+    { content: "Methodologist gets the next turn instead of ping-ponging.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+    const reviewerMessage = room.messages.at(-1);
+    assert.ok(reviewerMessage);
+
+    await stepDiscussion(room);
+    const advisorMessage = room.messages.at(-1);
+    assert.ok(advisorMessage);
+    assert.equal(advisorMessage.replyToMessageId, reviewerMessage.id);
+    assert.equal(advisorMessage.requiredReplyRoleId, null);
+    assert.equal(room.state.pendingRequiredReplies.length, 0);
+    assert.ok(!room.state.roundPendingRoleIds.includes(reviewer.id));
+
+    await stepDiscussion(room);
+    const nextSpeaker = room.messages.at(-1);
+    assert.ok(nextSpeaker);
+    assert.notEqual(nextSpeaker.roleId, reviewer.id);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("stop finalizes with recorder output and marks the room completed", async () => {
+  const room = createRoom({
+    providerType: "custom-http",
+    includeRecorder: true,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
+    { content: "Recorder final after stop.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+
+    await stopAndFinalizeDiscussion(room);
+
+    const finalInsight = room.summary.insights.find((insight) => insight.kind === "final");
+    assert.ok(finalInsight);
+    assert.equal(room.messages.at(-1)?.kind, "recorder");
+    assert.equal(room.state.status, "completed");
+    assert.equal(room.state.phase, "final");
+    assert.equal(room.state.activeExchange, null);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("stop without recorder still produces a fallback final conclusion and completes the room", async () => {
+  const room = createRoom({
+    providerType: "custom-http",
+    includeRecorder: false,
+    checkpointEveryRound: false,
+    maxRounds: 3,
+  });
+
+  const restoreFetch = installFetchSequence([
+    { content: "Reviewer opening point.", replyToMessageId: null, forceReplyRoleId: null },
+  ]);
+
+  try {
+    startDiscussion(room);
+    await stepDiscussion(room);
+
+    await stopAndFinalizeDiscussion(room);
+
+    const finalInsight = room.summary.insights.find((insight) => insight.kind === "final");
+    assert.ok(finalInsight);
+    assert.equal(room.state.status, "completed");
+    assert.equal(room.state.phase, "final");
+    assert.equal(room.state.activeExchange, null);
   } finally {
     restoreFetch();
   }

@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import {
   createBlankRoom,
   createBuiltInProviderPresets,
+  createParticipantActivityState,
   createReviewerAdvisorRoom,
   createSummary,
   normalizePreset,
@@ -19,6 +20,7 @@ import {
   DiscussionState,
   DiscussionSummary,
   InsightEntry,
+  ParticipantActivityState,
   PendingRequiredReply,
   ProviderPreset,
   ResearchDirectionPreset,
@@ -177,6 +179,36 @@ function normalizePendingRequiredReply(input: Partial<PendingRequiredReply>): Pe
   };
 }
 
+function normalizeParticipantActivity(input: Partial<ParticipantActivityState> | null | undefined): ParticipantActivityState {
+  const fallback = createParticipantActivityState();
+  return {
+    ...fallback,
+    lastSpokeTurn:
+      typeof input?.lastSpokeTurn === "number" && Number.isFinite(input.lastSpokeTurn) ? Math.max(0, input.lastSpokeTurn) : fallback.lastSpokeTurn,
+    lastSpokeRound:
+      typeof input?.lastSpokeRound === "number" && Number.isFinite(input.lastSpokeRound)
+        ? Math.max(0, input.lastSpokeRound)
+        : fallback.lastSpokeRound,
+    starvationDebt:
+      typeof input?.starvationDebt === "number" && Number.isFinite(input.starvationDebt)
+        ? Math.max(0, Math.floor(input.starvationDebt))
+        : fallback.starvationDebt,
+    consecutiveSelections:
+      typeof input?.consecutiveSelections === "number" && Number.isFinite(input.consecutiveSelections)
+        ? Math.max(0, Math.floor(input.consecutiveSelections))
+        : fallback.consecutiveSelections,
+    lastReplyTargetRoleId: typeof input?.lastReplyTargetRoleId === "string" ? input.lastReplyTargetRoleId : null,
+    directPressureDebt:
+      typeof input?.directPressureDebt === "number" && Number.isFinite(input.directPressureDebt)
+        ? Math.max(0, Math.floor(input.directPressureDebt))
+        : fallback.directPressureDebt,
+    userPressureDebt:
+      typeof input?.userPressureDebt === "number" && Number.isFinite(input.userPressureDebt)
+        ? Math.max(0, Math.floor(input.userPressureDebt))
+        : fallback.userPressureDebt,
+  };
+}
+
 function normalizeActiveExchange(input: Partial<ActiveExchange> | null | undefined): ActiveExchange | null {
   if (!input?.id) {
     return null;
@@ -288,6 +320,16 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
         .map((entry) => normalizePendingRequiredReply(entry))
         .filter((entry): entry is PendingRequiredReply => Boolean(entry))
     : fallback.pendingRequiredReplies;
+  const roundPendingRoleIds = Array.isArray((input as Partial<DiscussionState> | undefined)?.roundPendingRoleIds)
+    ? ((input as Partial<DiscussionState> | undefined)?.roundPendingRoleIds ?? []).filter(
+        (roleId): roleId is string => typeof roleId === "string" && roleId.trim().length > 0,
+      )
+    : fallback.roundPendingRoleIds;
+  const participantActivity = input?.participantActivity && typeof input.participantActivity === "object"
+    ? Object.fromEntries(
+        Object.entries(input.participantActivity).map(([roleId, value]) => [roleId, normalizeParticipantActivity(value)]),
+      )
+    : fallback.participantActivity;
 
   return {
     ...fallback,
@@ -331,6 +373,8 @@ function normalizeState(input: Partial<DiscussionState> | undefined, fallback: D
       typeof input?.totalTurns === "number" && Number.isFinite(input.totalTurns) ? input.totalTurns : fallback.totalTurns,
     lastActiveRoleId: typeof input?.lastActiveRoleId === "string" ? input.lastActiveRoleId : fallback.lastActiveRoleId,
     spokenParticipantRoleIds,
+    roundPendingRoleIds,
+    participantActivity,
     pendingRequiredReplies,
     activeExchange,
   };
@@ -356,6 +400,24 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
         (segmentId): segmentId is string => typeof segmentId === "string" && segmentId.trim().length > 0,
       )
     : base.selectedDocumentSegmentIds;
+
+  const normalizedRoles = Array.isArray(input.roles) ? input.roles.map((role) => normalizeRole(role)) : base.roles;
+  const normalizedState = normalizeState(input.state, base.state);
+  const enabledParticipantIds = normalizedRoles
+    .filter((role) => role.enabled && role.kind === "participant")
+    .map((role) => role.id);
+  const normalizedParticipantActivity = Object.fromEntries(
+    enabledParticipantIds.map((roleId) => [
+      roleId,
+      normalizeParticipantActivity(normalizedState.participantActivity[roleId]),
+    ]),
+  );
+  const normalizedRoundPendingRoleIds =
+    normalizedState.roundPendingRoleIds.length > 0
+      ? normalizedState.roundPendingRoleIds.filter((roleId) => enabledParticipantIds.includes(roleId))
+      : normalizedState.currentRound > 0
+        ? enabledParticipantIds.filter((roleId) => !normalizedState.spokenParticipantRoleIds.includes(roleId))
+        : [];
 
   return {
     ...base,
@@ -408,10 +470,15 @@ function normalizeRoom(input: Partial<DiscussionRoom>): DiscussionRoom {
       input.documentDiscussionMode === "whole-document" || input.documentDiscussionMode === "selected-segments"
         ? input.documentDiscussionMode
         : base.documentDiscussionMode,
-    roles: Array.isArray(input.roles) ? input.roles.map((role) => normalizeRole(role)) : base.roles,
+    roles: normalizedRoles,
     messages: Array.isArray(input.messages) ? input.messages.map((message, index) => normalizeMessage(message, index + 1)) : [],
     summary: normalizeSummary(input.summary),
-    state: normalizeState(input.state, base.state),
+    state: {
+      ...normalizedState,
+      roundPendingRoleIds: normalizedRoundPendingRoleIds,
+      participantActivity: normalizedParticipantActivity,
+      spokenParticipantRoleIds: normalizedState.spokenParticipantRoleIds.filter((roleId) => enabledParticipantIds.includes(roleId)),
+    },
     createdAt,
     updatedAt: input.updatedAt ?? createdAt,
   };

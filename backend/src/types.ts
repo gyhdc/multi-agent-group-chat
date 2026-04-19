@@ -109,6 +109,16 @@ export type InsightKind = "checkpoint" | "final";
 export type RequiredReplyReason = "user-direct-reply" | "participant-direct-request";
 export type ActiveExchangeReason = "topic-start" | "user-message" | "participant-forced-reply";
 
+export interface ParticipantActivityState {
+  lastSpokeTurn: number;
+  lastSpokeRound: number;
+  starvationDebt: number;
+  consecutiveSelections: number;
+  lastReplyTargetRoleId: string | null;
+  directPressureDebt: number;
+  userPressureDebt: number;
+}
+
 export interface DiscussionRole {
   id: string;
   name: string;
@@ -186,6 +196,8 @@ export interface DiscussionState {
   totalTurns: number;
   lastActiveRoleId: string | null;
   spokenParticipantRoleIds: string[];
+  roundPendingRoleIds: string[];
+  participantActivity: Record<string, ParticipantActivityState>;
   pendingRequiredReplies: PendingRequiredReply[];
   activeExchange: ActiveExchange | null;
 }

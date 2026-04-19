@@ -1,9 +1,20 @@
 import { randomUUID } from "crypto";
 import { assertDocumentReadyForDiscussion } from "./documents";
-import { generateParticipantContent, generateRecorderCheckpoint, generateRecorderFinal } from "./providers";
-import { ActiveExchange, ChatMessage, DiscussionRole, DiscussionRoom, InsightEntry, PendingRequiredReply } from "./types";
-
-const SPEAKER_SCORE_THRESHOLD = 30;
+import {
+  generateParticipantContent,
+  generateRecorderCheckpoint,
+  generateRecorderFinal,
+  type ParticipantReply,
+} from "./providers";
+import {
+  ActiveExchange,
+  ChatMessage,
+  DiscussionRole,
+  DiscussionRoom,
+  InsightEntry,
+  ParticipantActivityState,
+  PendingRequiredReply,
+} from "./types";
 
 function getParticipants(room: DiscussionRoom): DiscussionRole[] {
   return room.roles.filter((role) => role.enabled && role.kind === "participant");
@@ -66,34 +77,61 @@ function syncLegacySpeakerState(room: DiscussionRoom): void {
   room.state.nextSpeakerIndex = 0;
 }
 
-function hasCoveredCurrentRound(room: DiscussionRoom, participants = getParticipants(room)): boolean {
-  if (participants.length === 0) {
-    return false;
-  }
-  return participants.every((role) => room.state.spokenParticipantRoleIds.includes(role.id));
+function createEmptyParticipantActivity(): ParticipantActivityState {
+  return {
+    lastSpokeTurn: 0,
+    lastSpokeRound: 0,
+    starvationDebt: 0,
+    consecutiveSelections: 0,
+    lastReplyTargetRoleId: null,
+    directPressureDebt: 0,
+    userPressureDebt: 0,
+  };
 }
 
-function prepareCurrentRoundForParticipantMessage(room: DiscussionRoom, participants = getParticipants(room)): void {
+function ensureParticipantActivityState(room: DiscussionRoom, participants = getParticipants(room)): void {
+  const nextActivity: Record<string, ParticipantActivityState> = {};
+  participants.forEach((role) => {
+    nextActivity[role.id] = room.state.participantActivity[role.id] ?? createEmptyParticipantActivity();
+  });
+  room.state.participantActivity = nextActivity;
+}
+
+function initializeRoundPendingRoleIds(room: DiscussionRoom, participants = getParticipants(room)): void {
+  room.state.roundPendingRoleIds = participants.map((role) => role.id);
+  room.state.spokenParticipantRoleIds = [];
+}
+
+function ensureRoundSchedulerState(room: DiscussionRoom, participants = getParticipants(room)): void {
+  ensureParticipantActivityState(room, participants);
+
   if (room.state.currentRound <= 0) {
     room.state.currentRound = Math.max(1, room.state.completedRoundCount + 1);
   }
 
-  if (!hasCoveredCurrentRound(room, participants)) {
+  room.state.roundPendingRoleIds = room.state.roundPendingRoleIds.filter((roleId) =>
+    participants.some((role) => role.id === roleId),
+  );
+  room.state.spokenParticipantRoleIds = room.state.spokenParticipantRoleIds.filter((roleId) =>
+    participants.some((role) => role.id === roleId),
+  );
+
+  if (room.state.roundPendingRoleIds.length === 0 && room.state.spokenParticipantRoleIds.length === 0) {
+    initializeRoundPendingRoleIds(room, participants);
+  }
+}
+
+function hasCompletedCurrentRound(room: DiscussionRoom): boolean {
+  return room.state.roundPendingRoleIds.length === 0 && room.state.currentRound > 0;
+}
+
+function maybeStartNextRound(room: DiscussionRoom, participants = getParticipants(room)): void {
+  if (!hasCompletedCurrentRound(room)) {
     return;
   }
 
-  room.state.spokenParticipantRoleIds = [];
   room.state.currentRound = room.state.completedRoundCount + 1;
-}
-
-function updateRoundAfterParticipantMessage(room: DiscussionRoom, speaker: DiscussionRole, participants = getParticipants(room)): void {
-  if (!room.state.spokenParticipantRoleIds.includes(speaker.id)) {
-    room.state.spokenParticipantRoleIds.push(speaker.id);
-  }
-
-  if (hasCoveredCurrentRound(room, participants)) {
-    room.state.completedRoundCount = Math.max(room.state.completedRoundCount, room.state.currentRound);
-  }
+  initializeRoundPendingRoleIds(room, participants);
 }
 
 function getNextExchangeSequenceNumber(room: DiscussionRoom): number {
@@ -281,98 +319,232 @@ type SpeakerCandidate = {
   reason: string;
 };
 
+type DeliveryMode = "must-reply" | "prefer-reply" | "prefer-broadcast";
+
+type DeliveryPlan = {
+  mode: DeliveryMode;
+  replyCandidateIds: string[];
+  allowedForceReplyRoleIds: string[];
+};
+
+function getParticipantActivity(room: DiscussionRoom, roleId: string): ParticipantActivityState {
+  const activity = room.state.participantActivity[roleId];
+  if (activity) {
+    return activity;
+  }
+  const fallback = createEmptyParticipantActivity();
+  room.state.participantActivity[roleId] = fallback;
+  return fallback;
+}
+
+function getLatestDirectedUserMessageForRole(room: DiscussionRoom, roleId: string, openedAtTurn: number): ChatMessage | null {
+  for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+    const message = room.messages[index];
+    if (message.kind !== "user" || message.turn < openedAtTurn) {
+      continue;
+    }
+    if (message.requiredReplyRoleId === roleId) {
+      return message;
+    }
+    const replyTarget = findMessage(room, message.replyToMessageId);
+    if (replyTarget?.roleId === roleId) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function hasPendingDirectChallenge(room: DiscussionRoom, roleId: string, openedAtTurn: number): boolean {
+  const latestDirectChallenge = getLatestDirectChallenge(room, roleId, openedAtTurn);
+  return Boolean(latestDirectChallenge && !roleRespondedAfterTurn(room, roleId, latestDirectChallenge.turn));
+}
+
+function hasPendingUserEvidence(room: DiscussionRoom, roleId: string, openedAtTurn: number): boolean {
+  const latestUser = getLatestUserMessage(room, openedAtTurn);
+  if (!latestUser) {
+    return false;
+  }
+  return !roleRespondedAfterTurn(room, roleId, latestUser.turn);
+}
+
+function getPrimaryReplyCandidates(room: DiscussionRoom, roleId: string, openedAtTurn: number): ChatMessage[] {
+  const exchange = room.state.activeExchange;
+  const seen = new Set<string>();
+  const result: ChatMessage[] = [];
+
+  function pushCandidate(message: ChatMessage | null): void {
+    if (!message || seen.has(message.id)) {
+      return;
+    }
+    seen.add(message.id);
+    result.push(message);
+  }
+
+  if (exchange?.hardTargetRoleId === roleId && exchange.triggerMessageId) {
+    pushCandidate(findMessage(room, exchange.triggerMessageId));
+  }
+
+  pushCandidate(getLatestDirectChallenge(room, roleId, openedAtTurn));
+  pushCandidate(getLatestDirectedUserMessageForRole(room, roleId, openedAtTurn));
+
+  for (let index = room.messages.length - 1; index >= 0 && result.length < 4; index -= 1) {
+    const message = room.messages[index];
+    if (message.turn < openedAtTurn || message.kind !== "participant" || message.roleId === roleId) {
+      continue;
+    }
+    pushCandidate(message);
+  }
+
+  return result;
+}
+
+function buildSpeakerPool(room: DiscussionRoom, participants = getParticipants(room)): DiscussionRole[] {
+  const participantById = new Map(participants.map((role) => [role.id, role]));
+  const pendingPool = room.state.roundPendingRoleIds
+    .map((roleId) => participantById.get(roleId) ?? null)
+    .filter((role): role is DiscussionRole => Boolean(role));
+
+  if (pendingPool.length === 0) {
+    return [];
+  }
+
+  const starvedPool = pendingPool.filter((role) => getParticipantActivity(room, role.id).starvationDebt >= 3);
+  return starvedPool.length > 0 ? starvedPool : pendingPool;
+}
+
 function chooseScoredSpeaker(room: DiscussionRoom): SpeakerCandidate | null {
   const exchange = room.state.activeExchange;
-  if (!exchange) {
-    return null;
-  }
-
   const participants = getParticipants(room);
-  if (participants.length === 0) {
+  if (!exchange || participants.length === 0) {
     return null;
   }
 
-  const silenceRanking = participants
-    .map((role) => ({
-      roleId: role.id,
-      lastTurn: getLastParticipantTurn(room, role.id),
-    }))
-    .sort((left, right) => left.lastTurn - right.lastTurn);
-  const silenceBonus = new Map<string, number>();
-  silenceRanking.forEach((entry, index) => {
-    silenceBonus.set(entry.roleId, Math.max(0, 20 - index * 5));
-  });
+  const pool = buildSpeakerPool(room, participants);
+  if (pool.length === 0) {
+    return null;
+  }
 
   const latestParticipant = getLatestParticipantMessage(room);
-  const latestUser = getLatestUserMessage(room, exchange.openedAtTurn);
 
-  const candidates: SpeakerCandidate[] = participants.map((role) => {
-    let score = silenceBonus.get(role.id) ?? 0;
-    const reasons: string[] = [];
-    const responded = exchange.respondedRoleIds.includes(role.id);
-    const isHardTarget = exchange.hardTargetRoleId === role.id && !responded;
+  const candidates: SpeakerCandidate[] = pool.map((role) => {
+    const activity = getParticipantActivity(room, role.id);
+    const turnsSinceLastSpeech = activity.lastSpokeTurn > 0 ? room.state.totalTurns - activity.lastSpokeTurn : room.state.totalTurns + 1;
+    const pendingDirectChallenge = hasPendingDirectChallenge(room, role.id, exchange.openedAtTurn);
+    const pendingUserEvidence = hasPendingUserEvidence(room, role.id, exchange.openedAtTurn);
+    const isHardTarget = exchange.hardTargetRoleId === role.id && !exchange.respondedRoleIds.includes(role.id);
 
-    if (isHardTarget) {
-      score += 100;
-      reasons.push("mandatory hard target");
-    } else if (!responded) {
-      if (exchange.reason === "topic-start") {
-        score += 60;
-        reasons.push("topic-start opening voice");
-      } else if (exchange.reason === "user-message") {
-        score += exchange.hardTargetRoleId ? 25 : 50;
-        reasons.push(exchange.hardTargetRoleId ? "follow-up after directed user message" : "user evidence is fresh");
-      } else {
-        score += 20;
-        reasons.push("fresh voice after participant escalation");
-      }
-    }
+    let score = Math.min(48, turnsSinceLastSpeech * 6);
+    score += activity.starvationDebt * 18;
+    score += pendingDirectChallenge ? 40 + activity.directPressureDebt * 8 : 0;
+    score += pendingUserEvidence ? 30 + activity.userPressureDebt * 6 : 0;
+    score += isHardTarget ? 120 : 0;
+    score -= latestParticipant?.roleId === role.id ? 90 : 0;
+    score -= activity.consecutiveSelections > 1 ? 50 * activity.consecutiveSelections : 0;
+    score -= latestParticipant?.roleId === activity.lastReplyTargetRoleId ? 35 : 0;
 
-    const latestDirectChallenge = getLatestDirectChallenge(room, role.id, exchange.openedAtTurn);
-    if (latestDirectChallenge && !roleRespondedAfterTurn(room, role.id, latestDirectChallenge.turn)) {
-      score += 35;
-      reasons.push("unanswered direct challenge");
-    }
+    const reason = isHardTarget
+      ? "mandatory hard target"
+      : activity.starvationDebt >= 3
+        ? "starvation debt override"
+        : pendingDirectChallenge
+          ? "unanswered direct challenge"
+          : pendingUserEvidence
+            ? "pending user evidence"
+            : turnsSinceLastSpeech > 4
+              ? "long silence debt"
+              : "round fairness continuation";
 
-    if (latestUser && !roleRespondedAfterTurn(room, role.id, latestUser.turn)) {
-      score += 25;
-      reasons.push("has not addressed latest user evidence");
-    }
-
-    if (latestParticipant?.roleId === role.id) {
-      score -= 60;
-      reasons.push("was the previous participant speaker");
-    }
-
-    if (responded && !isHardTarget) {
-      const stillUnderChallenge =
-        (latestDirectChallenge && !roleRespondedAfterTurn(room, role.id, latestDirectChallenge.turn)) ||
-        (latestUser && !roleRespondedAfterTurn(room, role.id, latestUser.turn));
-      if (!stillUnderChallenge) {
-        score -= 40;
-        reasons.push("already responded in this exchange");
-      }
-    }
-
-    return {
-      role,
-      score,
-      reason: reasons.length > 0 ? reasons[0] : "natural continuation",
-    };
+    return { role, score, reason };
   });
 
   candidates.sort((left, right) => {
     if (right.score !== left.score) {
       return right.score - left.score;
     }
+
+    const leftActivity = getParticipantActivity(room, left.role.id);
+    const rightActivity = getParticipantActivity(room, right.role.id);
+    if (rightActivity.starvationDebt !== leftActivity.starvationDebt) {
+      return rightActivity.starvationDebt - leftActivity.starvationDebt;
+    }
+
+    const leftTurnsSinceLastSpeech = leftActivity.lastSpokeTurn > 0 ? room.state.totalTurns - leftActivity.lastSpokeTurn : room.state.totalTurns + 1;
+    const rightTurnsSinceLastSpeech =
+      rightActivity.lastSpokeTurn > 0 ? room.state.totalTurns - rightActivity.lastSpokeTurn : room.state.totalTurns + 1;
+    if (rightTurnsSinceLastSpeech !== leftTurnsSinceLastSpeech) {
+      return rightTurnsSinceLastSpeech - leftTurnsSinceLastSpeech;
+    }
+
     return participants.findIndex((role) => role.id === left.role.id) - participants.findIndex((role) => role.id === right.role.id);
   });
 
-  const best = candidates[0];
-  if (!best || best.score < SPEAKER_SCORE_THRESHOLD) {
-    return null;
+  return candidates[0] ?? null;
+}
+
+function buildDeliveryPlan(room: DiscussionRoom, speaker: DiscussionRole, forcedReply?: PendingRequiredReply | null): DeliveryPlan {
+  const exchange = room.state.activeExchange;
+  const openedAtTurn = exchange?.openedAtTurn ?? 0;
+  const replyCandidates = getPrimaryReplyCandidates(room, speaker.id, openedAtTurn);
+  const hardTargetMessage =
+    forcedReply?.sourceMessageId ?? (exchange?.hardTargetRoleId === speaker.id ? exchange.triggerMessageId : null);
+  const hasMandatoryReply = Boolean(hardTargetMessage);
+  const pendingDirectChallenge = hasPendingDirectChallenge(room, speaker.id, openedAtTurn);
+  const directedUserMessage = getLatestDirectedUserMessageForRole(room, speaker.id, openedAtTurn);
+
+  const mode: DeliveryMode = hasMandatoryReply || pendingDirectChallenge || Boolean(directedUserMessage)
+    ? "must-reply"
+    : replyCandidates.length > 0
+      ? "prefer-reply"
+      : "prefer-broadcast";
+
+  return {
+    mode,
+    replyCandidateIds: replyCandidates.map((message) => message.id),
+    allowedForceReplyRoleIds: room.state.roundPendingRoleIds.filter((roleId) => roleId !== speaker.id),
+  };
+}
+
+function correctParticipantReply(
+  room: DiscussionRoom,
+  speaker: DiscussionRole,
+  reply: ParticipantReply,
+  plan: DeliveryPlan,
+): ParticipantReply {
+  const allowedReplyIds = new Set(plan.replyCandidateIds);
+  const preferredReplyMessageId = plan.replyCandidateIds[0] ?? null;
+  const replyTargetIsValid = reply.replyToMessageId ? allowedReplyIds.has(reply.replyToMessageId) : false;
+
+  let nextReplyToMessageId = reply.replyToMessageId;
+  if (plan.mode === "must-reply") {
+    nextReplyToMessageId = preferredReplyMessageId;
+  } else if (plan.mode === "prefer-reply") {
+    nextReplyToMessageId = replyTargetIsValid ? reply.replyToMessageId : preferredReplyMessageId;
+  } else if (reply.replyToMessageId && !replyTargetIsValid) {
+    nextReplyToMessageId = null;
   }
-  return best;
+
+  const replyMeta = getReplyMetadata(room, nextReplyToMessageId);
+  const latestParticipant = getLatestParticipantMessage(room);
+  const speakerActivity = getParticipantActivity(room, speaker.id);
+  const allowedForceReplyIds = new Set(plan.allowedForceReplyRoleIds);
+
+  let nextForceReplyRoleId = reply.forceReplyRoleId;
+  if (!nextForceReplyRoleId || !allowedForceReplyIds.has(nextForceReplyRoleId)) {
+    nextForceReplyRoleId = null;
+  } else if (
+    latestParticipant?.roleId === nextForceReplyRoleId &&
+    speakerActivity.lastReplyTargetRoleId === nextForceReplyRoleId &&
+    !hasPendingDirectChallenge(room, nextForceReplyRoleId, room.state.activeExchange?.openedAtTurn ?? 0) &&
+    !hasPendingUserEvidence(room, nextForceReplyRoleId, room.state.activeExchange?.openedAtTurn ?? 0)
+  ) {
+    nextForceReplyRoleId = null;
+  }
+
+  return {
+    ...reply,
+    ...replyMeta,
+    forceReplyRoleId: nextForceReplyRoleId,
+  };
 }
 
 function updateExchangeAfterParticipantMessage(room: DiscussionRoom, speaker: DiscussionRole, message: ChatMessage): void {
@@ -393,17 +565,70 @@ function updateExchangeAfterParticipantMessage(room: DiscussionRoom, speaker: Di
   syncLegacySpeakerState(room);
 }
 
+function updateParticipantActivityAfterMessage(
+  room: DiscussionRoom,
+  speaker: DiscussionRole,
+  message: ChatMessage,
+  previousParticipantRoleId: string | null,
+  participants = getParticipants(room),
+): void {
+  const latestUser = getLatestUserMessage(room, room.state.activeExchange?.openedAtTurn ?? 0);
+
+  participants.forEach((role) => {
+    const activity = getParticipantActivity(room, role.id);
+
+    if (role.id === speaker.id) {
+      activity.lastSpokeTurn = message.turn;
+      activity.lastSpokeRound = message.round;
+      activity.starvationDebt = 0;
+      activity.directPressureDebt = 0;
+      activity.userPressureDebt = 0;
+      activity.lastReplyTargetRoleId = message.replyToMessageId ? findMessage(room, message.replyToMessageId)?.roleId ?? null : null;
+      activity.consecutiveSelections =
+        previousParticipantRoleId === speaker.id ? Math.max(1, activity.consecutiveSelections + 1) : 1;
+      return;
+    }
+
+    activity.consecutiveSelections = 0;
+
+    if (room.state.roundPendingRoleIds.includes(role.id)) {
+      activity.starvationDebt += 1;
+    }
+
+    const directChallenge = getLatestDirectChallenge(room, role.id, room.state.activeExchange?.openedAtTurn ?? 0);
+    if (directChallenge && !roleRespondedAfterTurn(room, role.id, directChallenge.turn)) {
+      activity.directPressureDebt += 1;
+    } else {
+      activity.directPressureDebt = 0;
+    }
+
+    if (latestUser && !roleRespondedAfterTurn(room, role.id, latestUser.turn)) {
+      activity.userPressureDebt += 1;
+    } else {
+      activity.userPressureDebt = 0;
+    }
+  });
+}
+
 async function emitParticipantMessage(
   room: DiscussionRoom,
   speaker: DiscussionRole,
   options: { forcedReply?: PendingRequiredReply | null; selectionReason: string },
 ): Promise<DiscussionRoom> {
   const participants = getParticipants(room);
-  prepareCurrentRoundForParticipantMessage(room, participants);
-  const reply = await generateParticipantContent(room, speaker, {
+  ensureRoundSchedulerState(room, participants);
+  maybeStartNextRound(room, participants);
+  const previousParticipantRoleId = getLatestParticipantMessage(room)?.roleId ?? null;
+
+  const deliveryPlan = buildDeliveryPlan(room, speaker, options.forcedReply ?? null);
+  const rawReply = await generateParticipantContent(room, speaker, {
     forcedReply: options.forcedReply ?? null,
     selectionReason: options.selectionReason,
+    deliveryMode: deliveryPlan.mode,
+    orderedReplyCandidateIds: deliveryPlan.replyCandidateIds,
+    allowedForceReplyRoleIds: deliveryPlan.allowedForceReplyRoleIds,
   });
+  const reply = correctParticipantReply(room, speaker, rawReply, deliveryPlan);
   const forcedTargetMessage = options.forcedReply ? findMessage(room, options.forcedReply.sourceMessageId) : null;
   const replyMeta = forcedTargetMessage
     ? getReplyMetadata(room, options.forcedReply?.sourceMessageId ?? null)
@@ -426,21 +651,31 @@ async function emitParticipantMessage(
   });
 
   updateExchangeAfterParticipantMessage(room, speaker, message);
-  updateRoundAfterParticipantMessage(room, speaker, participants);
+  room.state.roundPendingRoleIds = room.state.roundPendingRoleIds.filter((roleId) => roleId !== speaker.id);
+  if (!room.state.spokenParticipantRoleIds.includes(speaker.id)) {
+    room.state.spokenParticipantRoleIds.push(speaker.id);
+  }
+  updateParticipantActivityAfterMessage(room, speaker, message, previousParticipantRoleId, participants);
+
+  if (room.state.roundPendingRoleIds.length === 0) {
+    room.state.completedRoundCount = Math.max(room.state.completedRoundCount, room.state.currentRound);
+  }
 
   if (requiredReplyTarget) {
     enqueueRequiredReply(room, message.id, requiredReplyTarget, "participant-direct-request", "front");
-    setActiveExchange(
-      room,
-      {
-        reason: "participant-forced-reply",
-        triggerMessageId: message.id,
-        hardTargetRoleId: requiredReplyTarget.id,
-        respondedRoleIds: [],
-        followUpTurnsRemaining: 0,
-        openedAtTurn: message.turn,
-      },
-    );
+    if (room.state.roundPendingRoleIds.includes(requiredReplyTarget.id)) {
+      setActiveExchange(
+        room,
+        {
+          reason: "participant-forced-reply",
+          triggerMessageId: message.id,
+          hardTargetRoleId: requiredReplyTarget.id,
+          respondedRoleIds: [],
+          followUpTurnsRemaining: 0,
+          openedAtTurn: message.turn,
+        },
+      );
+    }
   }
 
   return room;
@@ -448,6 +683,72 @@ async function emitParticipantMessage(
 
 function finishCurrentExchange(room: DiscussionRoom): void {
   finalizeCompletedExchange(room);
+}
+
+async function emitRecorderCheckpoint(room: DiscussionRoom, recorder: DiscussionRole): Promise<void> {
+  const note = await generateRecorderCheckpoint(room, recorder);
+  room.state.totalTurns += 1;
+  room.state.lastActiveRoleId = recorder.id;
+
+  const insight = appendInsight(room, {
+    kind: "checkpoint",
+    title: `Round ${room.state.completedRoundCount} Notes`,
+    content: note,
+    round: room.state.completedRoundCount,
+    saved: false,
+  });
+  room.state.lastCheckpointedRoundCount = room.state.completedRoundCount;
+  room.state.lastCheckpointedExchangeCount = room.state.completedExchangeCount;
+
+  appendMessage(room, {
+    roleId: recorder.id,
+    roleName: recorder.name,
+    kind: "recorder",
+    content: insight.content,
+    replyToMessageId: null,
+    replyToRoleName: null,
+    replyToExcerpt: null,
+    requiredReplyRoleId: null,
+    requiredReplyRoleName: null,
+    round: room.state.completedRoundCount,
+    turn: room.state.totalTurns,
+  });
+}
+
+async function emitRecorderFinal(room: DiscussionRoom, recorder: DiscussionRole): Promise<void> {
+  const finalNote = await generateRecorderFinal(room, recorder);
+  room.state.totalTurns += 1;
+  room.state.lastActiveRoleId = recorder.id;
+
+  const insight = appendInsight(room, {
+    kind: "final",
+    title: "Final Conclusion",
+    content: finalNote,
+    round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
+    saved: true,
+  });
+
+  appendMessage(room, {
+    roleId: recorder.id,
+    roleName: recorder.name,
+    kind: "recorder",
+    content: insight.content,
+    replyToMessageId: null,
+    replyToRoleName: null,
+    replyToExcerpt: null,
+    requiredReplyRoleId: null,
+    requiredReplyRoleName: null,
+    round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
+    turn: room.state.totalTurns,
+  });
+}
+
+function prepareStopFinalization(room: DiscussionRoom): void {
+  room.state.pendingRequiredReplies = [];
+  room.state.roundPendingRoleIds = [];
+  room.state.spokenParticipantRoleIds = [];
+  clearActiveExchange(room);
+  room.state.phase = "final";
 }
 
 export function addUserMessage(room: DiscussionRoom, content: string, replyToMessageId?: string | null): DiscussionRoom {
@@ -529,6 +830,10 @@ export function startDiscussion(room: DiscussionRoom): DiscussionRoom {
     totalTurns: 0,
     lastActiveRoleId: null,
     spokenParticipantRoleIds: [],
+    roundPendingRoleIds: participants.map((role) => role.id),
+    participantActivity: Object.fromEntries(
+      participants.map((role) => [role.id, createEmptyParticipantActivity()]),
+    ),
     pendingRequiredReplies: [],
     activeExchange: {
       id: randomUUID(),
@@ -551,6 +856,28 @@ export function stopDiscussion(room: DiscussionRoom): DiscussionRoom {
     room.updatedAt = new Date().toISOString();
   }
   return room;
+}
+
+export async function stopAndFinalizeDiscussion(room: DiscussionRoom): Promise<DiscussionRoom> {
+  if (room.state.status === "completed") {
+    return room;
+  }
+
+  if (room.state.status !== "running" && room.state.status !== "stopped") {
+    return room;
+  }
+
+  const recorder = getRecorder(room);
+  prepareStopFinalization(room);
+
+  if (recorder) {
+    await emitRecorderFinal(room, recorder);
+    room.state.status = "completed";
+    room.updatedAt = new Date().toISOString();
+    return room;
+  }
+
+  return completeWithoutRecorder(room);
 }
 
 export function toggleInsightSaved(room: DiscussionRoom, insightId: string): DiscussionRoom {
@@ -581,6 +908,9 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
     guard += 1;
 
     if (room.state.phase === "participants") {
+      ensureRoundSchedulerState(room, participants);
+      maybeStartNextRound(room, participants);
+
       if (!room.state.activeExchange) {
         beginTopicStartExchange(room);
       }
@@ -613,6 +943,21 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
           forcedReply,
           selectionReason: "You are the mandatory reply target in the current exchange.",
         });
+
+        if (hasCompletedCurrentRound(room)) {
+          finishCurrentExchange(room);
+        }
+
+        if (room.state.completedRoundCount >= room.maxRounds) {
+          room.state.phase = "final";
+        }
+
+        if (recorder && shouldEmitCheckpoint(room)) {
+          await emitRecorderCheckpoint(room, recorder);
+          if (room.state.completedRoundCount >= room.maxRounds) {
+            prepareStopFinalization(room);
+          }
+        }
         return room;
       }
 
@@ -621,6 +966,21 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
         await emitParticipantMessage(room, candidate.role, {
           selectionReason: candidate.reason,
         });
+
+        if (hasCompletedCurrentRound(room)) {
+          finishCurrentExchange(room);
+        }
+
+        if (room.state.completedRoundCount >= room.maxRounds) {
+          room.state.phase = "final";
+        }
+
+        if (recorder && shouldEmitCheckpoint(room)) {
+          await emitRecorderCheckpoint(room, recorder);
+          if (room.state.completedRoundCount >= room.maxRounds) {
+            prepareStopFinalization(room);
+          }
+        }
         return room;
       }
 
@@ -651,33 +1011,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
         continue;
       }
 
-      const note = await generateRecorderCheckpoint(room, recorder);
-      room.state.totalTurns += 1;
-      room.state.lastActiveRoleId = recorder.id;
-
-      const insight = appendInsight(room, {
-        kind: "checkpoint",
-        title: `Round ${room.state.completedRoundCount} Notes`,
-        content: note,
-        round: room.state.completedRoundCount,
-        saved: false,
-      });
-      room.state.lastCheckpointedRoundCount = room.state.completedRoundCount;
-      room.state.lastCheckpointedExchangeCount = room.state.completedExchangeCount;
-
-      appendMessage(room, {
-        roleId: recorder.id,
-        roleName: recorder.name,
-        kind: "recorder",
-        content: insight.content,
-        replyToMessageId: null,
-        replyToRoleName: null,
-        replyToExcerpt: null,
-        requiredReplyRoleId: null,
-        requiredReplyRoleName: null,
-        round: room.state.completedRoundCount,
-        turn: room.state.totalTurns,
-      });
+      await emitRecorderCheckpoint(room, recorder);
 
       if (room.state.completedRoundCount >= room.maxRounds) {
         room.state.phase = "final";
@@ -690,31 +1024,7 @@ export async function stepDiscussion(room: DiscussionRoom): Promise<DiscussionRo
 
     if (room.state.phase === "final") {
       if (recorder) {
-        const finalNote = await generateRecorderFinal(room, recorder);
-        room.state.totalTurns += 1;
-        room.state.lastActiveRoleId = recorder.id;
-
-        const insight = appendInsight(room, {
-          kind: "final",
-          title: "Final Conclusion",
-          content: finalNote,
-          round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
-          saved: true,
-        });
-
-        appendMessage(room, {
-          roleId: recorder.id,
-          roleName: recorder.name,
-          kind: "recorder",
-          content: insight.content,
-          replyToMessageId: null,
-          replyToRoleName: null,
-          replyToExcerpt: null,
-          requiredReplyRoleId: null,
-          requiredReplyRoleName: null,
-          round: room.state.completedRoundCount > 0 ? room.state.completedRoundCount : room.state.currentRound,
-          turn: room.state.totalTurns,
-        });
+        await emitRecorderFinal(room, recorder);
       } else {
         return completeWithoutRecorder(room);
       }

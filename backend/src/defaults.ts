@@ -6,6 +6,7 @@ import {
   DiscussionLanguage,
   DiscussionRoom,
   DiscussionSummary,
+  ParticipantActivityState,
   ProviderConfig,
   ProviderPreset,
   ResearchDirectionKey,
@@ -172,6 +173,16 @@ export const createSummary = (): DiscussionSummary => ({
   updatedAt: null,
 });
 
+export const createParticipantActivityState = (): ParticipantActivityState => ({
+  lastSpokeTurn: 0,
+  lastSpokeRound: 0,
+  starvationDebt: 0,
+  consecutiveSelections: 0,
+  lastReplyTargetRoleId: null,
+  directPressureDebt: 0,
+  userPressureDebt: 0,
+});
+
 export const createBlankRoom = (): DiscussionRoom => {
   const now = nowIso();
   const researchProfile = getResearchProfile(defaultResearchDirection);
@@ -249,6 +260,8 @@ export const createBlankRoom = (): DiscussionRoom => {
       totalTurns: 0,
       lastActiveRoleId: null,
       spokenParticipantRoleIds: [],
+      roundPendingRoleIds: [],
+      participantActivity: {},
       pendingRequiredReplies: [],
       activeExchange: null,
     },

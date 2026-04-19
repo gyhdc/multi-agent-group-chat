@@ -11,7 +11,14 @@ import {
   refreshRoomDocumentDefaultTopic,
   updateRoomDocumentFocus,
 } from "./documents";
-import { addUserMessage, runDiscussion, startDiscussion, stepDiscussion, stopDiscussion, toggleInsightSaved } from "./orchestrator";
+import {
+  addUserMessage,
+  runDiscussion,
+  startDiscussion,
+  stepDiscussion,
+  stopAndFinalizeDiscussion,
+  toggleInsightSaved,
+} from "./orchestrator";
 import { generateRecorderTopic } from "./providers";
 import {
   deleteResearchDirection,
@@ -193,9 +200,13 @@ app.post("/api/rooms/:roomId/stop", async (req, res) => {
     return;
   }
 
-  stopDiscussion(room);
-  await saveRoom(room);
-  res.json(room);
+  try {
+    await stopAndFinalizeDiscussion(room);
+    await saveRoom(room);
+    res.json(room);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Failed to stop discussion." });
+  }
 });
 
 app.post("/api/rooms/:roomId/insights/:insightId/toggle-save", async (req, res) => {
