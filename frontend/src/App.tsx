@@ -668,12 +668,21 @@ function App() {
             },
             openai: {
               required:
-                "Provider：选择 OpenAI-Compatible API\nEndpoint：填写兼容 /v1 的基础地址，例如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1\nModel：必填，例如 gpt-5.4、gpt-4.1、qwen2.5:14b、deepseek-r1:32b",
+                "Provider：选择 OpenAI-Compatible HTTP API\nEndpoint：可填写基础地址、带 /v1 的基础地址，或完整的 /chat/completions /responses 地址，例如 https://api.openai.com、https://api.openai.com/v1、https://api.openai.com/v1/chat/completions\nModel：建议填写模型名，例如 gpt-5.4、gpt-4.1、qwen2.5:14b、deepseek-chat",
               optional:
-                "API Key：OpenAI 或其他需要鉴权的服务通常必填；本地 Ollama / 无鉴权 vLLM 通常可留空\nTemperature：采样温度\nMax Tokens：单次输出上限",
+                "API Key：OpenAI 或其他需要鉴权的服务通常必填；本地 Ollama / 无鉴权 vLLM 通常可留空\nTemperature：采样温度\nMax Tokens：单次输出上限\nTimeout：单次请求最长等待时间",
               example:
-                "OpenAI 官方接口：\nEndpoint: https://api.openai.com/v1\nModel: gpt-5.4\nAPI Key: sk-...\n\nOllama 本地接口：\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: 留空",
-              notes: "Endpoint 填基础地址即可，不要手动补 /chat/completions；应用会自动拼接请求路径。",
+                "OpenAI 官方接口：\nEndpoint: https://api.openai.com\nModel: gpt-5.4\nAPI Key: sk-...\n\nOllama 本地接口：\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: 留空",
+              notes: "Endpoint 支持基础地址、/v1 基础地址或完整 route。后端会按兼容顺序尝试 chat/completions 与 responses，并在部分字段不被接受时自动裁剪后重试。",
+            },
+            claude: {
+              required:
+                "Provider：选择 Claude / Anthropic Messages API\nEndpoint：可填写基础地址、带 /v1 的基础地址，或完整的 /v1/messages 地址，例如 https://api.anthropic.com、https://api.anthropic.com/v1、https://api.anthropic.com/v1/messages\nModel：填写 Claude 风格模型名，例如 claude-3-7-sonnet-latest、claude-3-5-sonnet-latest",
+              optional:
+                "API Key：Anthropic 官方或兼容服务通常必填\nTemperature：采样温度\nMax Tokens：单次输出上限\nTimeout：单次请求最长等待时间",
+              example:
+                "Anthropic 官方接口：\nEndpoint: https://api.anthropic.com\nModel: claude-3-7-sonnet-latest\nAPI Key: sk-ant-...\n\n完整 messages 路径：\nEndpoint: https://your-gateway.example/v1/messages\nModel: claude-3-5-sonnet-latest\nAPI Key: sk-ant-...",
+              notes: "后端会自动按 messages 协议发送请求，并优先使用 x-api-key + anthropic-version 头。像 api.aicodemirror.com/api/claudecode 这类当前返回网页或伪 503 的地址，实测并不是可直接使用的 JSON messages API。",
             },
             custom: {
               required:
@@ -717,12 +726,21 @@ function App() {
             },
             openai: {
               required:
-                "Provider: choose OpenAI-Compatible API\nEndpoint: fill the compatible /v1 base URL, such as https://api.openai.com/v1 or http://127.0.0.1:11434/v1\nModel: required, for example gpt-5.4, gpt-4.1, qwen2.5:14b, or deepseek-r1:32b",
+                "Provider: choose OpenAI-Compatible HTTP API\nEndpoint: you can use a base URL, a /v1 base URL, or a full /chat/completions or /responses route, such as https://api.openai.com, https://api.openai.com/v1, or https://api.openai.com/v1/chat/completions\nModel: usually fill the model name, for example gpt-5.4, gpt-4.1, qwen2.5:14b, or deepseek-chat",
               optional:
-                "API Key: usually required for OpenAI or any authenticated service; usually optional for local Ollama or unauthenticated vLLM\nTemperature: sampling temperature\nMax Tokens: single-response output cap",
+                "API Key: usually required for OpenAI or any authenticated service; usually optional for local Ollama or unauthenticated vLLM\nTemperature: sampling temperature\nMax Tokens: single-response output cap\nTimeout: maximum wait time per request",
               example:
-                "OpenAI official endpoint:\nEndpoint: https://api.openai.com/v1\nModel: gpt-5.4\nAPI Key: sk-...\n\nLocal Ollama endpoint:\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: leave blank",
-              notes: "Fill the base endpoint only. Do not manually append /chat/completions; the app adds the request path automatically.",
+                "OpenAI official endpoint:\nEndpoint: https://api.openai.com\nModel: gpt-5.4\nAPI Key: sk-...\n\nLocal Ollama endpoint:\nEndpoint: http://127.0.0.1:11434/v1\nModel: qwen2.5:14b\nAPI Key: leave blank",
+              notes: "The endpoint can be a base URL, a /v1 base URL, or a full route. The backend probes chat/completions and responses in a compatible order and can retry without optional sampling fields when needed.",
+            },
+            claude: {
+              required:
+                "Provider: choose Claude / Anthropic Messages API\nEndpoint: you can use a base URL, a /v1 base URL, or a full /v1/messages route, such as https://api.anthropic.com, https://api.anthropic.com/v1, or https://api.anthropic.com/v1/messages\nModel: fill a Claude-style model id such as claude-3-7-sonnet-latest or claude-3-5-sonnet-latest",
+              optional:
+                "API Key: usually required for Anthropic or compatible gateways\nTemperature: sampling temperature\nMax Tokens: single-response output cap\nTimeout: maximum wait time per request",
+              example:
+                "Anthropic official endpoint:\nEndpoint: https://api.anthropic.com\nModel: claude-3-7-sonnet-latest\nAPI Key: sk-ant-...\n\nFull messages route:\nEndpoint: https://your-gateway.example/v1/messages\nModel: claude-3-5-sonnet-latest\nAPI Key: sk-ant-...",
+              notes: "The backend sends Anthropic-style messages requests and prefers x-api-key plus anthropic-version headers. Endpoints like api.aicodemirror.com/api/claudecode currently returned HTML pages or pseudo-503 request errors during live probing, so they do not behave like usable JSON messages APIs here.",
             },
             custom: {
               required:
@@ -2283,7 +2301,7 @@ function App() {
           />
         </label>
 
-        {(provider.type === "openai-compatible" || provider.type === "custom-http") && (
+        {(provider.type === "openai-compatible" || provider.type === "anthropic-compatible" || provider.type === "custom-http") && (
           <>
             <label className="full-span">
               {t(UI_COPY.endpointLabel)}
@@ -2292,7 +2310,9 @@ function App() {
                 onChange={(event) => onChange({ ...provider, endpoint: event.target.value })}
                 placeholder={
                   provider.type === "openai-compatible"
-                    ? "http://localhost:11434/v1 or https://api.openai.com/v1"
+                    ? "https://api.openai.com, https://api.openai.com/v1, or a full route"
+                    : provider.type === "anthropic-compatible"
+                      ? "https://api.anthropic.com, https://api.anthropic.com/v1, or /v1/messages"
                     : "http://127.0.0.1:8000/chat"
                 }
               />
@@ -2324,6 +2344,16 @@ function App() {
                 max={4000}
                 step={1}
                 onCommit={(value) => onChange({ ...provider, maxTokens: Math.round(value) })}
+              />
+            </label>
+            <label>
+              {t(UI_COPY.timeoutLabel)}
+              <NumericInput
+                value={provider.timeoutMs}
+                min={10000}
+                max={600000}
+                step={1000}
+                onCommit={(value) => onChange({ ...provider, timeoutMs: Math.round(value) })}
               />
             </label>
           </>
@@ -4022,6 +4052,16 @@ function App() {
                 {renderGuideDetail(guideCopy.labels.optional, guideCopy.openai.optional)}
                 {renderGuideDetail(guideCopy.labels.example, guideCopy.openai.example, "code")}
                 {renderGuideDetail(guideCopy.labels.notes, guideCopy.openai.notes)}
+              </div>
+            </div>
+            <div className="guide-section">
+              <h4>{t(UI_COPY.guideClaudeTitle)}</h4>
+              <p>{t(UI_COPY.guideClaudeBody)}</p>
+              <div className="guide-detail-stack">
+                {renderGuideDetail(guideCopy.labels.required, guideCopy.claude.required)}
+                {renderGuideDetail(guideCopy.labels.optional, guideCopy.claude.optional)}
+                {renderGuideDetail(guideCopy.labels.example, guideCopy.claude.example, "code")}
+                {renderGuideDetail(guideCopy.labels.notes, guideCopy.claude.notes)}
               </div>
             </div>
             <div className="guide-section">

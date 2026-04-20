@@ -202,8 +202,16 @@ export const UI_COPY = {
   guideIntroTitle: text("如何接入 Agent / 大模型", "How to Connect Agents / Models"),
   guideMockTitle: text("Mock Demo", "Mock Demo"),
   guideMockBody: text("仅用于离线演示和界面测试，不会调用真实模型或本地 agent。", "For offline demos and UI testing only. It does not call a real model or local agent."),
-  guideOpenAITitle: text("OpenAI-Compatible", "OpenAI-Compatible"),
-  guideOpenAIBody: text("适用于 OpenAI、Ollama、vLLM 等兼容 /v1/chat/completions 的服务。填写 Endpoint、Model，必要时再填 API Key。", "Use this for OpenAI, Ollama, vLLM, or any /v1/chat/completions compatible service. Fill Endpoint and Model, then API Key if required."),
+  guideOpenAITitle: text("OpenAI-Compatible HTTP API", "OpenAI-Compatible HTTP API"),
+  guideOpenAIBody: text(
+    "适用于 OpenAI、Ollama、vLLM 以及其他兼容 OpenAI 风格 HTTP 接口的服务。Endpoint 可以填基础地址、/v1 基础地址，或完整的 /chat/completions /responses 地址；Model 通常建议显式填写。",
+    "Use this for OpenAI, Ollama, vLLM, and other OpenAI-style HTTP APIs. The endpoint can be a base URL, a /v1 base URL, or a full /chat/completions or /responses route; in most cases you should still fill the model explicitly.",
+  ),
+  guideClaudeTitle: text("Claude / Anthropic Messages API", "Claude / Anthropic Messages API"),
+  guideClaudeBody: text(
+    "适用于 Anthropic 官方接口或兼容 Claude messages 协议的服务。Endpoint 可以填基础地址、带 /v1 的基础地址，或完整的 /v1/messages 地址；后端会自动按 messages 协议拼装请求。",
+    "Use this for Anthropic's official API or any Claude-compatible messages endpoint. The endpoint can be a base URL, a /v1 base URL, or a full /v1/messages route; the backend sends Anthropic-style messages requests automatically.",
+  ),
   guideCustomTitle: text("Custom HTTP", "Custom HTTP"),
   guideCustomBody: text(
     "适用于你自己的本地 agent bridge 或服务。项目后端会把房间上下文、角色信息和 prompt 以 JSON POST 给你的服务；你至少返回 content，也可以附带 replyToMessageId 和 forceReplyRoleId。",
@@ -320,15 +328,23 @@ export const UI_COPY = {
     stopped: text("已停止", "Stopped"),
     completed: text("已完成", "Completed"),
   },
-  builtInPresetName: {
-    mock: text("Mock 演示套组", "Mock Demo Preset"),
-    "openai-compatible": text("OpenAI 兼容 API 套组", "OpenAI-Compatible API Preset"),
-    "custom-http": text("自定义 HTTP Agent 套组", "Custom HTTP Agent Preset"),
-    "codex-cli": text("本地 Codex CLI 套组", "Local Codex CLI Preset"),
-  } satisfies Record<ProviderType, LocalizedText>,
+    builtInPresetName: {
+      mock: text("Mock 演示套组", "Mock Demo Preset"),
+      "openai-compatible": text("OpenAI 兼容 HTTP API 套组", "OpenAI-Compatible HTTP API Preset"),
+      "anthropic-compatible": text("Claude / Anthropic Messages 套组", "Claude / Anthropic Messages Preset"),
+      "custom-http": text("自定义 HTTP Agent 套组", "Custom HTTP Agent Preset"),
+      "codex-cli": text("本地 Codex CLI 套组", "Local Codex CLI Preset"),
+    } satisfies Record<ProviderType, LocalizedText>,
   builtInPresetDescription: {
     mock: text("用于离线演示和冒烟测试的确定性 provider。", "Offline deterministic provider for demos and smoke tests."),
-    "openai-compatible": text("适用于任意兼容 /v1/chat/completions 的服务。", "Any /v1/chat/completions style API endpoint."),
+    "openai-compatible": text(
+      "适用于任意兼容 OpenAI 风格 HTTP API 的服务，支持基础地址、/v1 地址和完整 chat/completions 或 responses 路由。",
+      "Any OpenAI-style HTTP API endpoint, including base URLs, /v1 base URLs, and full chat/completions or responses routes.",
+    ),
+    "anthropic-compatible": text(
+      "适用于任意兼容 Claude / Anthropic messages 协议的服务，支持基础地址、/v1 地址和完整 messages 路由。",
+      "Any Claude / Anthropic messages API endpoint, including base URLs, /v1 base URLs, and full messages routes.",
+    ),
     "custom-http": text("通过 POST JSON 调用你自己的本地 agent bridge。", "Call your own local agent bridge via POST JSON."),
     "codex-cli": text(
       "在本地运行 Codex CLI；Model 建议留空，如别名不可用可改成 npx + @openai/codex。",
@@ -337,7 +353,8 @@ export const UI_COPY = {
   } satisfies Record<ProviderType, LocalizedText>,
   providerType: {
     mock: text("Mock 演示", "Mock Demo"),
-    "openai-compatible": text("OpenAI 兼容 API", "OpenAI-Compatible API"),
+    "openai-compatible": text("OpenAI 兼容 HTTP API", "OpenAI-Compatible HTTP API"),
+    "anthropic-compatible": text("Claude / Anthropic Messages API", "Claude / Anthropic Messages API"),
     "custom-http": text("自定义 HTTP Agent", "Custom HTTP Agent"),
     "codex-cli": text("本地 Codex CLI", "Local Codex CLI"),
   } satisfies Record<ProviderType, LocalizedText>,

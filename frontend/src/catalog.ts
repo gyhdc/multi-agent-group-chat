@@ -33,7 +33,7 @@ const createLocalizedText = (zh: string, en: string): LocalizedText => ({
   "en-US": en,
 });
 
-export const PROVIDER_TYPE_ORDER: ProviderType[] = ["mock", "openai-compatible", "custom-http", "codex-cli"];
+export const PROVIDER_TYPE_ORDER: ProviderType[] = ["mock", "openai-compatible", "anthropic-compatible", "custom-http", "codex-cli"];
 
 export const ROLE_TEMPLATE_ORDER: RoleTemplateKey[] = [
   "reviewer",

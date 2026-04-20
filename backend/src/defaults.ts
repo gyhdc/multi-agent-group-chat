@@ -16,6 +16,7 @@ import {
 export const PRESET_IDS = {
   mock: "preset-mock-demo",
   openaiCompatible: "preset-openai-compatible",
+  anthropicCompatible: "preset-anthropic-compatible",
   customHttp: "preset-custom-http",
   codexCli: "preset-codex-cli",
 } as const;
@@ -87,13 +88,26 @@ export const createBuiltInProviderPresets = (): ProviderPreset[] => {
     },
     {
       id: PRESET_IDS.openaiCompatible,
-      name: "OpenAI-Compatible API",
-      description: "Any /v1/chat/completions style API endpoint.",
+      name: "OpenAI-Compatible HTTP API",
+      description: "Any OpenAI-style HTTP API endpoint, including base URLs and full chat/responses routes.",
       builtIn: true,
       provider: {
         ...createProviderConfig("openai-compatible"),
         endpoint: "http://localhost:11434/v1",
         model: "gpt-4.1-mini",
+      },
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: PRESET_IDS.anthropicCompatible,
+      name: "Claude / Anthropic Messages API",
+      description: "Any Anthropic-style messages API endpoint, including base URLs and full /v1/messages routes.",
+      builtIn: true,
+      provider: {
+        ...createProviderConfig("anthropic-compatible"),
+        endpoint: "https://api.anthropic.com",
+        model: "claude-3-7-sonnet-latest",
       },
       createdAt: now,
       updatedAt: now,

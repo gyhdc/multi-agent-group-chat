@@ -56,12 +56,536 @@ interface ForceReplyCandidate {
   goal: string;
 }
 
+type OpenAICompatibleRouteKind = "chat-completions" | "responses";
+type AnthropicCompatibleRouteKind = "messages";
+
+interface HttpResponseBody {
+  contentType: string;
+  isJson: boolean;
+  isEventStream: boolean;
+  rawText: string;
+  data: unknown;
+}
+
+interface HttpRequestResult {
+  response: Response;
+  body: HttpResponseBody;
+}
+
+interface ProviderErrorDescriptor {
+  message: string;
+  type: string | null;
+  code: string | null;
+}
+
+interface OpenAICompatibleRequestPlan {
+  kind: OpenAICompatibleRouteKind;
+  url: string;
+}
+
+interface AnthropicCompatibleRequestPlan {
+  kind: AnthropicCompatibleRouteKind;
+  url: string;
+}
+
 function trimText(content: string, maxLength = 360): string {
   const normalized = content.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
   if (normalized.length <= maxLength) {
     return normalized;
   }
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function collectTextFragments(value: unknown, depth = 0, preserveWhitespace = false): string[] {
+  if (depth > 6 || value == null) {
+    return [];
+  }
+
+  if (typeof value === "string") {
+    const normalized = preserveWhitespace ? value : value.trim();
+    return normalized.trim() ? [normalized] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectTextFragments(item, depth + 1, preserveWhitespace));
+  }
+
+  const record = toRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  const candidates: unknown[] = [];
+  if (Object.hasOwn(record, "text")) {
+    candidates.push(record.text);
+  }
+  if (Object.hasOwn(record, "value")) {
+    candidates.push(record.value);
+  }
+  if (Object.hasOwn(record, "content")) {
+    candidates.push(record.content);
+  }
+  if (Object.hasOwn(record, "parts")) {
+    candidates.push(record.parts);
+  }
+  if (Object.hasOwn(record, "message")) {
+    candidates.push(record.message);
+  }
+
+  return candidates.flatMap((candidate) => collectTextFragments(candidate, depth + 1, preserveWhitespace));
+}
+
+function getFirstTextCandidate(candidates: unknown[], options: { preserveWhitespace?: boolean } = {}): string | null {
+  for (const candidate of candidates) {
+    const preserveWhitespace = options.preserveWhitespace ?? false;
+    const pieces = collectTextFragments(candidate, 0, preserveWhitespace);
+    if (pieces.length > 0) {
+      const combined = preserveWhitespace ? pieces.join("") : pieces.join("\n").trim();
+      if (combined.trim()) {
+        return preserveWhitespace ? combined : combined.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function redactSecrets(text: string, secrets: string[]): string {
+  let redacted = text.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]");
+  for (const secret of secrets) {
+    const trimmed = secret.trim();
+    if (trimmed.length >= 6) {
+      redacted = redacted.split(trimmed).join("[REDACTED]");
+    }
+  }
+  return redacted;
+}
+
+function formatErrorMessage(message: string, secrets: string[] = []): string {
+  return redactSecrets(message.replace(/\s+/g, " ").trim(), secrets).slice(0, 400);
+}
+
+function detectOpenAICompatibleTerminal(pathname: string): OpenAICompatibleRouteKind | null {
+  const normalized = pathname.replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(normalized)) {
+    return "chat-completions";
+  }
+  if (/\/responses$/i.test(normalized)) {
+    return "responses";
+  }
+  return null;
+}
+
+function hasV1PathSegment(pathname: string): boolean {
+  return pathname
+    .replace(/\/+$/, "")
+    .split("/")
+    .some((segment) => segment === "v1");
+}
+
+function toNormalizedUrlString(url: URL): string {
+  const normalized = new URL(url.toString());
+  const trimmedPath = normalized.pathname.replace(/\/+$/, "");
+  normalized.pathname = trimmedPath || "/";
+  return normalized.toString();
+}
+
+function appendUrlPath(url: URL, suffix: string): string {
+  const next = new URL(url.toString());
+  const basePath = next.pathname.replace(/\/+$/, "");
+  next.pathname = `${basePath}${suffix}`;
+  return next.toString();
+}
+
+function buildOpenAICompatibleRequestPlans(endpoint: string): OpenAICompatibleRequestPlan[] {
+  const trimmed = endpoint.trim();
+  if (!trimmed) {
+    throw new Error("OpenAI-compatible provider requires an endpoint.");
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("OpenAI-compatible provider endpoint must be a valid absolute URL.");
+  }
+
+  const terminal = detectOpenAICompatibleTerminal(url.pathname);
+  const candidates =
+    terminal !== null
+      ? [{ kind: terminal, url: toNormalizedUrlString(url) }]
+      : hasV1PathSegment(url.pathname)
+        ? [
+            { kind: "chat-completions" as const, url: appendUrlPath(url, "/chat/completions") },
+            { kind: "responses" as const, url: appendUrlPath(url, "/responses") },
+          ]
+        : [
+            { kind: "chat-completions" as const, url: appendUrlPath(url, "/v1/chat/completions") },
+            { kind: "chat-completions" as const, url: appendUrlPath(url, "/chat/completions") },
+            { kind: "responses" as const, url: appendUrlPath(url, "/v1/responses") },
+            { kind: "responses" as const, url: appendUrlPath(url, "/responses") },
+          ];
+
+  const deduped: OpenAICompatibleRequestPlan[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const key = `${candidate.kind}:${candidate.url}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(candidate);
+    }
+  }
+  return deduped;
+}
+
+function buildAnthropicCompatibleRequestPlans(endpoint: string): AnthropicCompatibleRequestPlan[] {
+  const trimmed = endpoint.trim();
+  if (!trimmed) {
+    throw new Error("Claude / Anthropic provider requires an endpoint.");
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("Claude / Anthropic provider endpoint must be a valid absolute URL.");
+  }
+
+  const normalized = url.pathname.replace(/\/+$/, "");
+  const candidates =
+    /\/messages$/i.test(normalized)
+      ? [{ kind: "messages" as const, url: toNormalizedUrlString(url) }]
+      : hasV1PathSegment(url.pathname)
+        ? [{ kind: "messages" as const, url: appendUrlPath(url, "/messages") }]
+        : [
+            { kind: "messages" as const, url: appendUrlPath(url, "/v1/messages") },
+            { kind: "messages" as const, url: appendUrlPath(url, "/messages") },
+          ];
+
+  const deduped: AnthropicCompatibleRequestPlan[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const key = `${candidate.kind}:${candidate.url}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(candidate);
+    }
+  }
+  return deduped;
+}
+
+function buildOpenAICompatibleRequestBody(
+  kind: OpenAICompatibleRouteKind,
+  role: DiscussionRole,
+  payload: TextPromptPayload,
+  includeOptionalParams: boolean,
+): Record<string, unknown> {
+  if (kind === "responses") {
+    return {
+      model: role.provider.model,
+      instructions: payload.system,
+      input: payload.user,
+      stream: false,
+      ...(includeOptionalParams ? { temperature: role.provider.temperature, max_output_tokens: role.provider.maxTokens } : {}),
+    };
+  }
+
+  return {
+    model: role.provider.model,
+    messages: [
+      { role: "system", content: payload.system },
+      { role: "user", content: payload.user },
+    ],
+    stream: false,
+    ...(includeOptionalParams ? { temperature: role.provider.temperature, max_tokens: role.provider.maxTokens } : {}),
+  };
+}
+
+function buildAnthropicCompatibleRequestBody(
+  role: DiscussionRole,
+  payload: TextPromptPayload,
+  includeOptionalParams: boolean,
+): Record<string, unknown> {
+  return {
+    model: role.provider.model,
+    system: payload.system,
+    messages: [
+      {
+        role: "user",
+        content: payload.user,
+      },
+    ],
+    max_tokens: role.provider.maxTokens,
+    ...(includeOptionalParams ? { temperature: role.provider.temperature } : {}),
+  };
+}
+
+async function readHttpResponseBody(response: Response): Promise<HttpResponseBody> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  const rawText = await response.text();
+  let data: unknown = null;
+  let isJson = contentType.includes("application/json") || contentType.includes("+json");
+  const isEventStream = contentType.includes("text/event-stream");
+
+  if (rawText) {
+    const trimmed = rawText.trim();
+    if (isJson || /^[\[{]/.test(trimmed)) {
+      try {
+        data = JSON.parse(rawText);
+        isJson = true;
+      } catch {
+        data = null;
+      }
+    }
+  }
+
+  return {
+    contentType,
+    isJson,
+    isEventStream,
+    rawText,
+    data,
+  };
+}
+
+async function performHttpRequest(options: {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+  timeoutMs: number;
+}): Promise<HttpRequestResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+
+  try {
+    const response = await fetch(options.url, {
+      method: options.method,
+      headers: options.headers,
+      body: options.body,
+      signal: controller.signal,
+    });
+    const body = await readHttpResponseBody(response);
+    return { response, body };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${options.timeoutMs} ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractTextFromSsePayload(payload: string): string | null {
+  const trimmed = payload.trim();
+  if (!trimmed || trimmed === "[DONE]") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+    const firstChoice = toRecord(choices[0]);
+    const delta = toRecord(firstChoice?.delta);
+    return getFirstTextCandidate(
+      [
+        parsed.output_text,
+        delta?.content,
+        delta?.text,
+        firstChoice?.message,
+        firstChoice?.text,
+        parsed.content,
+        parsed.message,
+        parsed.output,
+      ],
+      { preserveWhitespace: true },
+    );
+  } catch {
+    return trimmed;
+  }
+}
+
+function extractTextFromEventStream(rawText: string): string | null {
+  const chunks: string[] = [];
+  for (const line of rawText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const piece = extractTextFromSsePayload(line.slice(5));
+    if (piece) {
+      chunks.push(piece);
+    }
+  }
+
+  const combined = chunks.join("").trim();
+  return combined || null;
+}
+
+function extractOpenAICompatibleContent(body: HttpResponseBody): string | null {
+  if (body.isEventStream) {
+    return extractTextFromEventStream(body.rawText);
+  }
+
+  const record = toRecord(body.data);
+  const choices = Array.isArray(record?.choices) ? record.choices : [];
+  const firstChoice = toRecord(choices[0]);
+  return getFirstTextCandidate([
+    firstChoice?.message ? toRecord(firstChoice.message)?.content ?? firstChoice.message : null,
+    firstChoice?.text,
+    record?.output_text,
+    record?.output,
+    record?.content,
+    record?.message,
+    record?.output,
+    body.isJson ? body.data : null,
+  ]);
+}
+
+function extractAnthropicCompatibleContent(body: HttpResponseBody): string | null {
+  const record = toRecord(body.data);
+  return getFirstTextCandidate([
+    record?.content,
+    record?.completion,
+    record?.message,
+    record?.output,
+    body.isJson ? body.data : null,
+  ]);
+}
+
+function extractProviderErrorDescriptor(body: HttpResponseBody, secrets: string[]): ProviderErrorDescriptor {
+  const record = toRecord(body.data);
+  const errorRecord = toRecord(record?.error);
+  return {
+    message:
+      formatErrorMessage(
+        getFirstTextCandidate([errorRecord?.message, errorRecord?.detail, record?.message, record?.detail, record?.error, body.rawText]) ??
+          "Request failed.",
+        secrets,
+      ) || "Request failed.",
+    type:
+      typeof errorRecord?.type === "string"
+        ? errorRecord.type
+        : typeof record?.type === "string"
+          ? record.type
+          : null,
+    code:
+      typeof errorRecord?.code === "string"
+        ? errorRecord.code
+        : typeof record?.code === "string"
+          ? record.code
+          : null,
+  };
+}
+
+function isHtmlDocumentResponse(body: HttpResponseBody): boolean {
+  if (body.contentType.includes("text/html")) {
+    return true;
+  }
+
+  const snippet = body.rawText.trimStart().slice(0, 256).toLowerCase();
+  return snippet.startsWith("<!doctype html") || snippet.startsWith("<html");
+}
+
+function formatProviderHttpError(
+  providerLabel: string,
+  url: string,
+  status: number | null,
+  descriptor: ProviderErrorDescriptor,
+): string {
+  const details = [descriptor.type ? `type=${descriptor.type}` : null, descriptor.code ? `code=${descriptor.code}` : null]
+    .filter(Boolean)
+    .join(", ");
+  return `${providerLabel} error at ${url}${status ? ` (HTTP ${status})` : ""}: ${descriptor.message}${details ? ` [${details}]` : ""}`;
+}
+
+function shouldRetryWithoutOptionalParams(status: number, descriptor: ProviderErrorDescriptor): boolean {
+  if (status !== 400) {
+    return false;
+  }
+
+  const text = `${descriptor.message} ${descriptor.type ?? ""} ${descriptor.code ?? ""}`.toLowerCase();
+  return (
+    /\b(temperature|max_tokens|max_output_tokens)\b/.test(text) &&
+    /(unsupported|unknown|unexpected|not allowed|not permitted|invalid|extra|additional)/.test(text)
+  );
+}
+
+function shouldRetryAnthropicWithoutOptionalParams(status: number, descriptor: ProviderErrorDescriptor): boolean {
+  if (status !== 400) {
+    return false;
+  }
+
+  const text = `${descriptor.message} ${descriptor.type ?? ""} ${descriptor.code ?? ""}`.toLowerCase();
+  return /\btemperature\b/.test(text) && /(unsupported|unknown|unexpected|not allowed|not permitted|invalid|extra|additional)/.test(text);
+}
+
+function shouldAdvanceOpenAICompatibleCandidate(
+  status: number,
+  descriptor: ProviderErrorDescriptor,
+  kind: OpenAICompatibleRouteKind,
+): boolean {
+  const text = `${descriptor.message} ${descriptor.type ?? ""} ${descriptor.code ?? ""}`.toLowerCase();
+
+  if ([404, 405, 415].includes(status)) {
+    return true;
+  }
+
+  if (status >= 500 && status <= 504) {
+    return (
+      /(wrong request|bad request|invalid request|malformed|schema|unsupported|unknown field|unknown parameter|unexpected field|unexpected parameter)/.test(
+        text,
+      ) ||
+      /(错误请求|请求错误|本地客户端发送错误请求|无法被.*正确响应|参数.*错误|字段.*错误|请求.*格式)/.test(text)
+    );
+  }
+
+  if (status !== 400) {
+    return false;
+  }
+
+  if (kind === "chat-completions") {
+    return (
+      /(messages?.*(not supported|not allowed|invalid|unexpected|unknown)|unknown field.*messages|unsupported.*messages)/.test(text) ||
+      /(input.*required|instructions.*required|use .*responses|responses api)/.test(text)
+    );
+  }
+
+  return (
+    /(input.*(not supported|not allowed|invalid|unexpected|unknown)|instructions.*(not supported|not allowed|invalid|unexpected|unknown))/.test(
+      text,
+    ) ||
+    /(unknown field.*input|unknown field.*instructions|messages.*required|use .*chat|chat\/completions)/.test(text)
+  );
+}
+
+function shouldAdvanceAnthropicCompatibleCandidate(status: number, descriptor: ProviderErrorDescriptor): boolean {
+  const text = `${descriptor.message} ${descriptor.type ?? ""} ${descriptor.code ?? ""}`.toLowerCase();
+
+  if ([404, 405, 415].includes(status)) {
+    return true;
+  }
+
+  if (status >= 500 && status <= 504) {
+    return (
+      /(wrong request|bad request|invalid request|malformed|schema|unsupported|unknown field|unknown parameter|unexpected field|unexpected parameter)/.test(
+        text,
+      ) ||
+      /(错误请求|请求错误|本地客户端发送错误请求|无法被.*正确响应|参数.*错误|字段.*错误|请求.*格式)/.test(text)
+    );
+  }
+
+  if (status !== 400) {
+    return false;
+  }
+
+  return (
+    /(messages?.*(not supported|not allowed|invalid|unexpected|unknown)|unknown field.*messages|unsupported.*messages)/.test(text) ||
+    /(use .*chat|chat\/completions|input.*required|instructions.*required)/.test(text)
+  );
 }
 
 function getParticipants(room: DiscussionRoom): DiscussionRole[] {
@@ -728,37 +1252,171 @@ function buildExpandedMockRecorderMessage(room: DiscussionRoom, finalMode: boole
 }
 
 async function requestOpenAICompatible(role: DiscussionRole, payload: TextPromptPayload): Promise<string> {
-  const base = role.provider.endpoint.trim().replace(/\/+$/, "");
-  const url = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(role.provider.apiKey ? { Authorization: `Bearer ${role.provider.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: role.provider.model,
-      temperature: role.provider.temperature,
-      max_tokens: role.provider.maxTokens,
-      messages: [
-        { role: "system", content: payload.system },
-        { role: "user", content: payload.user },
-      ],
-    }),
-  });
+  const secrets = [role.provider.apiKey];
+  const plans = buildOpenAICompatibleRequestPlans(role.provider.endpoint);
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    throw new Error(`OpenAI-compatible provider error: ${response.status}`);
+  for (const plan of plans) {
+    let includeOptionalParams = true;
+
+    while (true) {
+      let result: HttpRequestResult;
+      try {
+        result = await performHttpRequest({
+          url: plan.url,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(role.provider.apiKey ? { Authorization: `Bearer ${role.provider.apiKey}` } : {}),
+          },
+          body: JSON.stringify(buildOpenAICompatibleRequestBody(plan.kind, role, payload, includeOptionalParams)),
+          timeoutMs: role.provider.timeoutMs,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown request failure.";
+        throw new Error(
+          formatProviderHttpError(
+            "OpenAI-compatible provider",
+            plan.url,
+            null,
+            {
+              message: formatErrorMessage(message, secrets),
+              type: null,
+              code: null,
+            },
+          ),
+        );
+      }
+
+      if (!result.response.ok) {
+        const descriptor = extractProviderErrorDescriptor(result.body, secrets);
+        if (includeOptionalParams && shouldRetryWithoutOptionalParams(result.response.status, descriptor)) {
+          includeOptionalParams = false;
+          continue;
+        }
+
+        const error = new Error(
+          formatProviderHttpError("OpenAI-compatible provider", plan.url, result.response.status, descriptor),
+        );
+
+        if (
+          result.response.status !== 401 &&
+          result.response.status !== 403 &&
+          result.response.status !== 429 &&
+          shouldAdvanceOpenAICompatibleCandidate(result.response.status, descriptor, plan.kind)
+        ) {
+          lastError = error;
+          break;
+        }
+
+        throw error;
+      }
+
+      if (isHtmlDocumentResponse(result.body)) {
+        throw new Error(
+          `OpenAI-compatible provider endpoint returned an HTML page instead of JSON at ${plan.url}. This usually means the configured endpoint is a website route, login page, or wrong API base URL.`,
+        );
+      }
+
+      const content = extractOpenAICompatibleContent(result.body);
+      if (content) {
+        return content;
+      }
+
+      lastError = new Error(
+        `OpenAI-compatible provider returned empty content after calling ${plan.url}.`,
+      );
+      break;
+    }
   }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = data.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    throw new Error("OpenAI-compatible provider returned empty content.");
+  throw lastError ?? new Error("OpenAI-compatible provider request failed.");
+}
+
+async function requestAnthropicCompatible(role: DiscussionRole, payload: TextPromptPayload): Promise<string> {
+  const secrets = [role.provider.apiKey];
+  const plans = buildAnthropicCompatibleRequestPlans(role.provider.endpoint);
+  let lastError: Error | null = null;
+
+  for (const plan of plans) {
+    let includeOptionalParams = true;
+
+    while (true) {
+      let result: HttpRequestResult;
+      try {
+        result = await performHttpRequest({
+          url: plan.url,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            ...(role.provider.apiKey
+              ? {
+                  "x-api-key": role.provider.apiKey,
+                  Authorization: `Bearer ${role.provider.apiKey}`,
+                }
+              : {}),
+          },
+          body: JSON.stringify(buildAnthropicCompatibleRequestBody(role, payload, includeOptionalParams)),
+          timeoutMs: role.provider.timeoutMs,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown request failure.";
+        throw new Error(
+          formatProviderHttpError(
+            "Claude / Anthropic provider",
+            plan.url,
+            null,
+            {
+              message: formatErrorMessage(message, secrets),
+              type: null,
+              code: null,
+            },
+          ),
+        );
+      }
+
+      if (!result.response.ok) {
+        const descriptor = extractProviderErrorDescriptor(result.body, secrets);
+        if (includeOptionalParams && shouldRetryAnthropicWithoutOptionalParams(result.response.status, descriptor)) {
+          includeOptionalParams = false;
+          continue;
+        }
+
+        const error = new Error(
+          formatProviderHttpError("Claude / Anthropic provider", plan.url, result.response.status, descriptor),
+        );
+
+        if (
+          result.response.status !== 401 &&
+          result.response.status !== 403 &&
+          result.response.status !== 429 &&
+          shouldAdvanceAnthropicCompatibleCandidate(result.response.status, descriptor)
+        ) {
+          lastError = error;
+          break;
+        }
+
+        throw error;
+      }
+
+      if (isHtmlDocumentResponse(result.body)) {
+        throw new Error(
+          `Claude / Anthropic provider endpoint returned an HTML page instead of JSON at ${plan.url}. This usually means the configured endpoint is a website route, login page, or wrong API base URL.`,
+        );
+      }
+
+      const content = extractAnthropicCompatibleContent(result.body);
+      if (content) {
+        return content;
+      }
+
+      lastError = new Error(`Claude / Anthropic provider returned empty content after calling ${plan.url}.`);
+      break;
+    }
   }
-  return content;
+
+  throw lastError ?? new Error("Claude / Anthropic provider request failed.");
 }
 
 async function requestCustomHttp(
@@ -766,38 +1424,54 @@ async function requestCustomHttp(
   role: DiscussionRole,
   payload: TextPromptPayload,
 ): Promise<{ content: string; replyToMessageId?: string | null; forceReplyRoleId?: string | null }> {
-  const response = await fetch(role.provider.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(role.provider.apiKey ? { Authorization: `Bearer ${role.provider.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      room,
-      role,
-      prompt: payload,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Custom HTTP provider error: ${response.status}`);
+  let result: HttpRequestResult;
+  try {
+    result = await performHttpRequest({
+      url: role.provider.endpoint,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(role.provider.apiKey ? { Authorization: `Bearer ${role.provider.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        room,
+        role,
+        prompt: payload,
+      }),
+      timeoutMs: role.provider.timeoutMs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown request failure.";
+    throw new Error(
+      formatProviderHttpError("Custom HTTP provider", role.provider.endpoint, null, {
+        message: formatErrorMessage(message, [role.provider.apiKey]),
+        type: null,
+        code: null,
+      }),
+    );
   }
 
-  const data = (await response.json()) as {
-    content?: string;
-    message?: string;
-    output?: string;
-    replyToMessageId?: string | null;
-    forceReplyRoleId?: string | null;
-  };
-  const content = data.content ?? data.message ?? data.output;
-  if (!content?.trim()) {
-    throw new Error("Custom HTTP provider returned empty content.");
+  if (!result.response.ok) {
+    throw new Error(
+      formatProviderHttpError(
+        "Custom HTTP provider",
+        role.provider.endpoint,
+        result.response.status,
+        extractProviderErrorDescriptor(result.body, [role.provider.apiKey]),
+      ),
+    );
   }
+
+  const data = toRecord(result.body.data);
+  const content = getFirstTextCandidate([data?.content, data?.message, data?.output]);
+  if (!content) {
+    throw new Error(`Custom HTTP provider returned empty content after calling ${role.provider.endpoint}.`);
+  }
+
   return {
     content,
-    replyToMessageId: data.replyToMessageId ?? null,
-    forceReplyRoleId: data.forceReplyRoleId ?? null,
+    replyToMessageId: typeof data?.replyToMessageId === "string" ? data.replyToMessageId : null,
+    forceReplyRoleId: typeof data?.forceReplyRoleId === "string" ? data.forceReplyRoleId : null,
   };
 }
 
@@ -1139,6 +1813,8 @@ export async function generateParticipantContent(
   const raw =
     role.provider.type === "openai-compatible"
       ? await requestOpenAICompatible(role, prompt)
+      : role.provider.type === "anthropic-compatible"
+        ? await requestAnthropicCompatible(role, prompt)
       : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
   return applyForcedReplyConstraints(room, finalizeParticipantReply(raw, room, role), options.forcedReply);
@@ -1155,6 +1831,8 @@ export async function generateRecorderCheckpoint(room: DiscussionRoom, role: Dis
       ? (await requestCustomHttp(room, role, prompt)).content
       : role.provider.type === "openai-compatible"
         ? await requestOpenAICompatible(role, prompt)
+        : role.provider.type === "anthropic-compatible"
+          ? await requestAnthropicCompatible(role, prompt)
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
   return trimText(raw, 900);
@@ -1171,6 +1849,8 @@ export async function generateRecorderFinal(room: DiscussionRoom, role: Discussi
       ? (await requestCustomHttp(room, role, prompt)).content
       : role.provider.type === "openai-compatible"
         ? await requestOpenAICompatible(role, prompt)
+        : role.provider.type === "anthropic-compatible"
+          ? await requestAnthropicCompatible(role, prompt)
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
   return trimText(raw, 1400);
@@ -1191,6 +1871,8 @@ export async function generateRecorderTopic(room: DiscussionRoom, role: Discussi
       ? (await requestCustomHttp(room, role, prompt)).content
       : role.provider.type === "openai-compatible"
         ? await requestOpenAICompatible(role, prompt)
+        : role.provider.type === "anthropic-compatible"
+          ? await requestAnthropicCompatible(role, prompt)
         : await requestCodexCli(role, buildCodexPrompt(prompt.system, prompt.user));
 
   return trimText(raw, 200);

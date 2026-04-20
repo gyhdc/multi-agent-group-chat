@@ -1,4 +1,4 @@
-export type ProviderType = "mock" | "openai-compatible" | "custom-http" | "codex-cli";
+export type ProviderType = "mock" | "openai-compatible" | "anthropic-compatible" | "custom-http" | "codex-cli";
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type UiLocale = "zh-CN" | "en-US";
 export type UiScalePreset = "compact" | "default" | "comfortable";

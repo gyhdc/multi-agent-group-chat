@@ -571,6 +571,13 @@ export async function ensureStorage(): Promise<void> {
   const existingPresets = await listProviderPresets();
   if (existingPresets.length === 0) {
     await writeProviderPresets(createBuiltInProviderPresets());
+  } else {
+    const builtIns = createBuiltInProviderPresets();
+    const existingIds = new Set(existingPresets.map((preset) => preset.id));
+    const missingBuiltIns = builtIns.filter((preset) => !existingIds.has(preset.id));
+    if (missingBuiltIns.length > 0) {
+      await writeProviderPresets([...existingPresets, ...missingBuiltIns]);
+    }
   }
 }
 
